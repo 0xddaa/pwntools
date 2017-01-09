@@ -685,6 +685,22 @@ class tube(Timeout, Logger):
 
         return self.buffer.get()
 
+    def leak(self, delim='\n', timeout=default):
+        """recvaddr() -> int
+        arguments:
+            delim(str): String of delimiters characters. All bytes before delimiters will be considered leaked address.
+
+        Returns:
+            An integer that impied the memory address.
+        """
+        if context.word_size == 64:
+            pack = packing.u64
+        elif context.word_size == 32:
+            pack = packing.u32
+        else:
+            raise AssertionError('Not supported.')
+        return pack(self.recvuntil(delim, drop=True).ljust(context.bytes, '\x00'))
+
     def send(self, data):
         """send(data)
 
