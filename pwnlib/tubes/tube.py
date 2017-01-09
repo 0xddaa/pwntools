@@ -716,10 +716,11 @@ class tube(Timeout, Logger):
                 self.indented(fiddling.hexdump(data), level = logging.DEBUG)
         self.send_raw(data)
 
-    def sendline(self, line=''):
-        r"""sendline(data)
+    def sendline(self, line='', n=-1):
+        r"""sendline(data, n)
 
         Shorthand for ``t.send(data + t.newline)``.
+        Will not send newline if the length of data is eqaul to `n`
 
         Examples:
 
@@ -733,7 +734,8 @@ class tube(Timeout, Logger):
             'hello\r\n'
         """
 
-        self.send(line + self.newline)
+        line += '' if len(line) == n else self.newline
+        self.send(line)
 
     def sendlines(self, lines=[]):
         for line in lines:
