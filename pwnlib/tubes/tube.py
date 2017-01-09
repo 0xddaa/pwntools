@@ -699,7 +699,7 @@ class tube(Timeout, Logger):
             pack = packing.u32
         else:
             raise AssertionError('Not supported.')
-        return pack(self.recvuntil(delim, drop=True).ljust(context.bytes, '\x00'))
+        return pack(self.recvuntil(delim, drop=True)[:context.bytes].ljust(context.bytes, '\x00'))
 
     def send(self, data):
         """send(data)
