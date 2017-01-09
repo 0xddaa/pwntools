@@ -871,6 +871,10 @@ class ELF(ELFFile):
     def ubsan(self):
         return any(s.startswith('__ubsan_') for s in self.symbols)
 
+    @property
+    def binsh(self):
+        return self.search('/bin/sh').next()
+
 
 
     def p64(self,  address, data, *a, **kw):    return self.write(address, packing.p64(data, *a, **kw))
