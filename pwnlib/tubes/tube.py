@@ -701,10 +701,10 @@ class tube(Timeout, Logger):
             raise AssertionError('Not supported.')
         return pack(self.recvuntil(delim, drop=True)[:context.bytes].ljust(context.bytes, '\x00'))
 
-    def send(self, data):
-        """send(data)
+    def send(self, data, n=-1):
+        """send(data, n)
 
-        Sends data.
+        Sends data. If `n` is given, only send the n bytes of data.
 
         If log level ``DEBUG`` is enabled, also prints out the data
         received.
@@ -730,13 +730,13 @@ class tube(Timeout, Logger):
                     self.indented(repr(line), level = logging.DEBUG)
             else:
                 self.indented(fiddling.hexdump(data), level = logging.DEBUG)
-        self.send_raw(data)
+        self.send_raw(data if n == -1 else data[:n])
 
     def sendline(self, line='', n=-1):
         r"""sendline(data, n)
 
         Shorthand for ``t.send(data + t.newline)``.
-        Will not send newline if the length of data is eqaul to `n`
+        Will not send newline if the length is great than `n` or eqaul to `n`
 
         Examples:
 
@@ -750,8 +750,10 @@ class tube(Timeout, Logger):
             'hello\r\n'
         """
 
-        line += '' if len(line) == n else self.newline
-        self.send(line)
+        if n == -1:
+            self.send(line + self.newline)
+        else:
+            self.send(line[:n] if len(line) >= n else line + self.newline)
 
     def sendlines(self, lines=[]):
         for line in lines:
