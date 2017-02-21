@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import base64
 import random
+import os
 import re
 import string
 import StringIO
@@ -10,7 +11,7 @@ from . import packing
 from ..context import context
 from ..log import getLogger
 from ..term import text
-from .cyclic import cyclic
+from .cyclic import de_bruijn
 from .cyclic import cyclic_find
 
 log = getLogger(__name__)
@@ -559,13 +560,15 @@ default_style = {
 }
 
 cyclic_pregen = ''
+de_bruijn_gen = de_bruijn()
 
 def sequential_lines(a,b):
     return (a+b) in cyclic_pregen
 
 def update_cyclic_pregenerated(size):
     global cyclic_pregen
-    cyclic_pregen = cyclic(size)
+    while size > len(cyclic_pregen):
+        cyclic_pregen += de_bruijn_gen.next()
 
 def hexdump_iter(fd, width=16, skip=True, hexii=False, begin=0, style=None,
                  highlight=None, cyclic=False):
@@ -627,30 +630,49 @@ def hexdump_iter(fd, width=16, skip=True, hexii=False, begin=0, style=None,
             return hbyte, abyte
         cache = [style_byte(chr(b)) for b in range(256)]
 
-    if cyclic:
-        update_cyclic_pregenerated(len(s))
-
     numb = 0
     while True:
         offset = begin + numb
-        chunk = fd.read(width)
+
+        # If a tube is passed in as fd, it will raise EOFError when it runs
+        # out of data, unlike a file or StringIO object, which return an empty
+        # string.
+        try:
+            chunk = fd.read(width)
+        except EOFError:
+            chunk = ''
+
+        # We have run out of data, exit the loop
         if chunk == '':
             break
+
+        # Advance the cursor by the number of bytes we actually read
         numb += len(chunk)
+
+        # Update the cyclic pattern in case
+        if cyclic:
+            update_cyclic_pregenerated(numb)
+
         # If this chunk is the same as the last unique chunk,
         # use a '*' instead.
-        if skip and \
-           (last_unique == chunk or \
-            (cyclic and sequential_lines(last_unique, chunk))):
+        if skip and last_unique:
+            same_as_last_line = (last_unique == chunk)
+            lines_are_sequential = (cyclic and sequential_lines(last_unique, chunk))
             last_unique = chunk
-            if not skipping:
-                yield '*'
-                skipping = True
-            continue
 
-        # Chunk is unique, save for next iteration
-        last_unique = chunk
+            if same_as_last_line or lines_are_sequential:
+
+                # If we have not already printed a "*", do so
+                if not skipping:
+                    yield '*'
+                    skipping = True
+
+                # Move on to the next chunk
+                continue
+
+        # Chunk is unique, no longer skipping
         skipping = False
+        last_unique = chunk
 
         # Generate contents for line
         hexbytes = ''
