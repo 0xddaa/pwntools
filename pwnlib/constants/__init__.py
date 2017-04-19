@@ -40,13 +40,15 @@ Example:
     4
 
 """
+from __future__ import absolute_import
+
 import importlib
 import sys
 from types import ModuleType
 
-from ..context import context
-from ..util import safeeval
-from .constant import Constant
+from pwnlib.constants.constant import Constant
+from pwnlib.context import context
+from pwnlib.util import safeeval
 
 
 class ConstantsModule(ModuleType):
@@ -136,6 +138,11 @@ class ConstantsModule(ModuleType):
         """
         if not isinstance(string, str):
             return string
+
+        simple = getattr(self, string, None)
+
+        if simple is not None:
+            return simple
 
         key = context.os, context.arch
         if key not in self._env_store:

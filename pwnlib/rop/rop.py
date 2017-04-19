@@ -192,6 +192,8 @@ Let's try it out!
     >>> p.recvline()
     'hello\n'
 """
+from __future__ import absolute_import
+
 import collections
 import copy
 import hashlib
@@ -200,23 +202,23 @@ import re
 import sys
 import tempfile
 
-from . import srop
-from .. import abi
-from .. import constants
-from ..context import LocalContext
-from ..context import context
-from ..elf import ELF
-from ..log import getLogger
-from ..util import cyclic
-from ..util import lists
-from ..util import packing
-from ..util.packing import *
-from .call import AppendedArgument
-from .call import Call
-from .call import CurrentStackPointer
-from .call import NextGadgetAddress
-from .call import StackAdjustment
-from .gadgets import Gadget
+from pwnlib import abi
+from pwnlib import constants
+from pwnlib.context import LocalContext
+from pwnlib.context import context
+from pwnlib.elf import ELF
+from pwnlib.log import getLogger
+from pwnlib.rop import srop
+from pwnlib.rop.call import AppendedArgument
+from pwnlib.rop.call import Call
+from pwnlib.rop.call import CurrentStackPointer
+from pwnlib.rop.call import NextGadgetAddress
+from pwnlib.rop.call import StackAdjustment
+from pwnlib.rop.gadgets import Gadget
+from pwnlib.util import cyclic
+from pwnlib.util import lists
+from pwnlib.util import packing
+from pwnlib.util.packing import *
 
 log = getLogger(__name__)
 __all__ = ['ROP']
@@ -384,9 +386,6 @@ class ROP(object):
     #: Stack address where the first byte of the ROP chain lies, if known.
     base = 0
 
-    #: Alignment of the ROP chain; generally the same as the pointer size
-    align = 4
-
     #: Whether or not the ROP chain directly sets the stack pointer to a value
     #: which is not contiguous
     migrated = False
@@ -394,7 +393,7 @@ class ROP(object):
     def __init__(self, elfs, base = None, **kwargs):
         """
         Arguments:
-            elfs(list): List of ``pwnlib.elf.ELF`` objects for mining
+            elfs(list): List of :class:`.ELF` objects for mining
         """
         import ropgadget
 
@@ -406,7 +405,6 @@ class ROP(object):
         self.elfs = elfs
         self._chain = []
         self.base = base
-        self.align = max((e.elfclass for e in elfs)) / 8
         self.migrated = False
         self.__load()
 
@@ -498,7 +496,7 @@ class ROP(object):
     def build(self, base = None, description = None):
         """
         Construct the ROP chain into a list of elements which can be passed
-        to ``pwnlib.util.packing.flat``.
+        to :func:`.flat`.
 
         Arguments:
             base(int):
@@ -673,7 +671,7 @@ class ROP(object):
         Returns:
             str containing raw ROP bytes
         """
-        return packing.flat(self.build(), word_size=8 * self.align)
+        return packing.flat(self.build())
 
     def dump(self):
         """Dump the ROP chain in an easy-to-read manner"""
@@ -805,7 +803,7 @@ class ROP(object):
             self.raw(next_base)
         elif pop_bp and leave and len(pop_bp.regs) == 1:
             self.raw(pop_bp)
-            self.raw(next_base - 4)
+            self.raw(next_base - context.bytes)
             self.raw(leave)
         else:
             log.error('Cannot find the gadgets to migrate')
@@ -924,18 +922,22 @@ class ROP(object):
         #
         self.gadgets = {}
         self.pivots = {}
-        frame_regs = ['ebp', 'esp'] if self.align == 4 else ['rbp', 'rsp']
+        frame_regs = {
+            4: ['ebp', 'esp'],
+            8: ['rbp', 'rsp']
+        }[context.bytes]
+
         for addr, insns in gadgets.items():
             sp_move = 0
             regs = []
             for insn in insns:
                 if pop.match(insn):
                     regs.append(pop.match(insn).group(1))
-                    sp_move += self.align
+                    sp_move += context.bytes
                 elif add.match(insn):
                     sp_move += int(add.match(insn).group(1), 16)
                 elif ret.match(insn):
-                    sp_move += self.align
+                    sp_move += context.bytes
                 elif leave.match(insn):
                     #
                     # HACK: Since this modifies ESP directly, this should
@@ -998,7 +1000,7 @@ class ROP(object):
         by ``(total_moves, total_regs, addr)``, otherwise by ``(total_regs, total_moves, addr)``.
 
         Returns:
-            A ``pwnlib.rop.gadgets.Gadget`` object
+            A :class:`.Gadget` object
         """
         matches = self.search_iter(move, regs)
         if matches is None:
@@ -1054,7 +1056,7 @@ class ROP(object):
         # Check for 'ret' or 'ret_X'
         #
         if attr.startswith('ret'):
-            count = 4
+            count = context.bytes
             if '_' in attr:
                 count = int(attr.split('_')[1])
             return self.search(move=count)

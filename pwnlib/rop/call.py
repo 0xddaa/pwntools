@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Abstracting ROP calls
 """
-from ..abi import ABI
-from ..context import context
-from ..util import packing
+from pwnlib.abi import ABI
+from pwnlib.context import context
+from pwnlib.util import packing
 
 
 class Unresolved(object):
@@ -144,11 +144,11 @@ class AppendedArgument(Unresolved):
     def resolve(self, addr = None):
         """
         Return a flat list of ``int`` or ``str`` objects which can be
-        passed to ``pwnlib.packing.flat``
+        passed to :func:`.flat`.
 
         Arguments:
             addr(int): Address at which the data starts in memory.
-                If ``None``, ``self.addr`` is used.
+                If :const:`None`, ``self.addr`` is used.
         """
         if addr is None:
             addr = self.address

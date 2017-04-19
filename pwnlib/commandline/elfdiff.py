@@ -1,13 +1,17 @@
 #!/usr/bin/env python2
+from __future__ import absolute_import
+
 import shutil
 from argparse import ArgumentParser
 from subprocess import CalledProcessError
 from subprocess import check_output
 from tempfile import NamedTemporaryFile
 
-from pwn import *
+import pwnlib
+pwnlib.args.free_form = False
 
-from . import common
+from pwn import *
+from pwnlib.commandline import common
 
 
 def dump(objdump, path):

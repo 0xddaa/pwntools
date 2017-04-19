@@ -158,16 +158,17 @@ Mipsel Example:
     True
 
 """
+from __future__ import absolute_import
 
 from collections import namedtuple
 
-from ..abi import ABI
-from ..context import LocalContext
-from ..context import context
-from ..log import getLogger
-from ..util.packing import flat
-from ..util.packing import pack
-from ..util.packing import unpack_many
+from pwnlib.abi import ABI
+from pwnlib.context import LocalContext
+from pwnlib.context import context
+from pwnlib.log import getLogger
+from pwnlib.util.packing import flat
+from pwnlib.util.packing import pack
+from pwnlib.util.packing import unpack_many
 
 log = getLogger(__name__)
 
@@ -203,10 +204,15 @@ registers = {
                    144: 't5', 152: 't6', 160: 't7', 168: 's0', 176: 's1', 184: 's2', 192: 's3', 200: 's4',
                    208: 's5', 216: 's6', 224: 's7', 232: 't8', 240: 't9', 248: 'k0', 256: 'k1', 264: 'gp',
                    272: 'sp', 280: 's8', 288: 'ra'},
-        'aarch64': {312: 'x0', 320: 'x1', 328: 'x2', 336: 'x3', 344: 'x4', 352: 'x5', 360: 'x6',
-                    368: 'x7', 376: 'x8', 384: 'x9', 392: 'x10', 400: 'x11', 408: 'x12', 416: 'x13',
-                    424: 'x14', 432: 'x15', 440: 'x16', 448: 'x17', 456: 'x26', 528: 'x27', 536: 'x28',
-                    544: 'x29', 552: 'x30', 560: 'sp', 568: 'pc', 592: 'magic'}
+        'aarch64': {312: 'x0', 320: 'x1', 328: 'x2', 336: 'x3',
+                    344: 'x4',  352: 'x5', 360: 'x6', 368: 'x7',
+                    376: 'x8', 384: 'x9', 392: 'x10', 400: 'x11',
+                    408: 'x12', 416: 'x13', 424: 'x14', 432: 'x15',
+                    440: 'x16', 448: 'x17', 456: 'x18', 464: 'x19',
+                    472: 'x20', 480: 'x21', 488: 'x22', 496: 'x23',
+                    504: 'x24', 512: 'x25', 520: 'x26', 528: 'x27',
+                    536: 'x28', 544: 'x29', 552: 'x30', 560: 'sp',
+                    568: 'pc', 592: 'magic'}
 }
 
 defaults = {
@@ -371,7 +377,9 @@ class SigreturnFrame(dict):
         if item not in self._regs:
             log.error("Unknown register %r (not in %r)" % (item, self._regs))
         if self.arch == "arm" and item == "sp" and (value & 0x7):
-            log.error("ARM SP should be 8-bit aligned")
+            log.warn_once("ARM SP should be aligned to an 8-byte boundary")
+        if self.arch == "aarch64" and item == "sp" and (value & 0xf):
+            log.warn_once("AArch64 SP should be aligned to a 16-byte boundary")
         super(SigreturnFrame, self).__setitem__(item, value)
 
     def __setattr__(self, attr, value):
@@ -395,6 +403,9 @@ class SigreturnFrame(dict):
     def __len__(self):
         return self.size
 
+    def __flat__(self):
+        return str(self)
+
     @property
     def registers(self):
         if self.arch == "mips" and self.endian == "little":
@@ -411,6 +422,11 @@ class SigreturnFrame(dict):
     def arguments(self):
         # Skip the register used to hold the syscall number
         return ABI.syscall(arch=self.arch).register_arguments[1:]
+
+    @arguments.setter
+    def arguments(self, a):
+        for arg, reg in zip(a, self.arguments):
+            setattr(self, reg, arg)
 
     @property
     def sp(self):

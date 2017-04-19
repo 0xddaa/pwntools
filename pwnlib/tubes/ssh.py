@@ -1,3 +1,5 @@
+from __future__ import absolute_import
+
 import inspect
 import logging
 import os
@@ -11,17 +13,18 @@ import threading
 import time
 import types
 
-from .. import term
-from ..context import context
-from ..log import Logger
-from ..log import getLogger
-from ..timeout import Timeout
-from ..util import hashes
-from ..util import misc
-from ..util import safeeval
-from ..util import sh_string
-from .process import process
-from .sock import sock
+from pwnlib import term
+from pwnlib.context import context
+from pwnlib.log import Logger
+from pwnlib.log import getLogger
+from pwnlib.term import text
+from pwnlib.timeout import Timeout
+from pwnlib.tubes.process import process
+from pwnlib.tubes.sock import sock
+from pwnlib.util import hashes
+from pwnlib.util import misc
+from pwnlib.util import safeeval
+from pwnlib.util import sh_string
 
 # Kill the warning line:
 # No handlers could be found for logger "paramiko.transport"
@@ -38,34 +41,19 @@ class ssh_channel(sock):
     #: Remote host
     host = None
 
-    #: Return code, or ``None`` if the process has not returned
+    #: Return code, or :const:`None` if the process has not returned
     #: Use :meth:`poll` to check.
     returncode = None
 
-    #: ``True`` if a tty was allocated for this channel
+    #: :const:`True` if a tty was allocated for this channel
     tty = False
 
-    #: Environment specified for the remote process, or ``None``
+    #: Environment specified for the remote process, or :const:`None`
     #: if the default environment was used
     env = None
 
     #: Command specified for the constructor
     process = None
-
-    #: Working directory
-    cwd = None
-
-    #: PID of the process
-    #: Only valid when instantiated through :meth:`ssh.process`
-    pid = None
-
-    #: Executable of the procesks
-    #: Only valid when instantiated through :meth:`ssh.process`
-    executable = None
-
-    #: Arguments passed to the process
-    #: Only valid when instantiated through :meth:`ssh.process`
-    argv = None
 
     def __init__(self, parent, process = None, tty = False, wd = None, env = None, raw = True, *args, **kwargs):
         super(ssh_channel, self).__init__(*args, **kwargs)
@@ -287,12 +275,90 @@ class ssh_channel(sock):
     def _close_msg(self):
         self.info('Closed SSH channel with %s' % self.host)
 
+class ssh_process(ssh_channel):
+    #: Working directory
+    cwd = None
+
+    #: PID of the process
+    #: Only valid when instantiated through :meth:`ssh.process`
+    pid = None
+
+    #: Executable of the procesks
+    #: Only valid when instantiated through :meth:`ssh.process`
+    executable = None
+
+    #: Arguments passed to the process
+    #: Only valid when instantiated through :meth:`ssh.process`
+    argv = None
+
+    def libs(self):
+        """libs() -> dict
+
+        Returns a dictionary mapping the address of each loaded library in the
+        process's address space.
+
+        If ``/proc/$PID/maps`` cannot be opened, the output of ldd is used
+        verbatim, which may be different than the actual addresses if ASLR
+        is enabled.
+        """
+        maps = self.parent.libs(self.executable)
+
+        maps_raw = self.parent.cat('/proc/%d/maps' % self.pid)
+
+        for lib in maps:
+            remote_path = lib.split(self.parent.host)[-1]
+            for line in maps_raw.splitlines():
+                if line.endswith(remote_path):
+                    address = line.split('-')[0]
+                    maps[lib] = int(address, 16)
+                    break
+        return maps
+
+
+    @property
+    def libc(self):
+        """libc() -> ELF
+
+        Returns an ELF for the libc for the current process.
+        If possible, it is adjusted to the correct address
+        automatically.
+        """
+        from pwnlib.elf import ELF
+
+        for lib, address in self.libs().items():
+            if 'libc.so' in lib:
+                e = ELF(lib)
+                e.address = address
+                return e
+
+    @property
+    def elf(self):
+        """elf() -> pwnlib.elf.elf.ELF
+
+        Returns an ELF file for the executable that launched the process.
+        """
+        import pwnlib.elf.elf
+
+        libs = self.parent.libs(self.executable)
+
+        for lib in libs:
+            if self.executable in lib:
+                return pwnlib.elf.elf.ELF(lib)
+
+
+    @property
+    def corefile(self):
+        import pwnlib.elf.corefile
+
+        finder = pwnlib.elf.corefile.CorefileFinder(self)
+        if not finder.core_path:
+            self.error("Could not find core file for pid %i" % self.pid)
+
+        return pwnlib.elf.corefile.Corefile(finder.core_path)
+
     def getenv(self, variable, **kwargs):
         """Retrieve the address of an environment variable in the remote process.
         """
-        if not hasattr(self, 'argv'):
-            self.error("Can only call getenv() on ssh_channel objects created with ssh.process")
-
         argv0 = self.argv[0]
 
         script = ';'.join(('from ctypes import *',
@@ -322,48 +388,16 @@ class ssh_channel(sock):
         except:
             self.exception("Could not look up environment variable %r" % variable)
 
-    def libs(self):
-        """libs() -> dict
+    def _close_msg(self):
+        # If we never completely started up, just use the parent implementation
+        if self.executable is None:
+            return super(ssh_process, self)._close_msg()
 
-        Returns a dictionary mapping the address of each loaded library in the
-        process's address space.
+        self.info('Stopped remote process %r on %s (pid %i)' \
+            % (os.path.basename(self.executable),
+               self.host,
+               self.pid))
 
-        If ``/proc/$PID/maps`` cannot be opened, the output of ldd is used
-        verbatim, which may be different than the actual addresses if ASLR
-        is enabled.
-        """
-        if not self.executable:
-            self.error("Can only use libs() on ssh_channel objects created with ssh.process()")
-
-        maps = self.parent.libs(self.executable)
-
-        maps_raw = self.parent.cat('/proc/%d/maps' % self.pid)
-
-        for lib in maps:
-            remote_path = lib.split(self.parent.host)[-1]
-            for line in maps_raw.splitlines():
-                if line.endswith(remote_path):
-                    address = line.split('-')[0]
-                    maps[lib] = int(address, 16)
-                    break
-        return maps
-
-
-    @property
-    def libc(self):
-        """libc() -> ELF
-
-        Returns an ELF for the libc for the current process.
-        If possible, it is adjusted to the correct address
-        automatically.
-        """
-        from ..elf import ELF
-
-        for lib, address in self.libs().items():
-            if 'libc.so' in lib:
-                e = ELF(lib)
-                e.address = address
-                return e
 
 class ssh_connecter(sock):
     def __init__(self, parent, host, port, *a, **kw):
@@ -470,7 +504,7 @@ class ssh(Timeout, Logger):
     client = None
 
     #: Paramiko SFTPClient object which is used for file transfers.
-    #: Set to ``None`` to disable ``sftp``.
+    #: Set to :const:`None` to disable ``sftp``.
     sftp = None
 
     #: PID of the remote ``sshd`` process servicing this connection.
@@ -493,7 +527,7 @@ class ssh(Timeout, Logger):
             timeout: Timeout, in seconds
             level: Log level
             cache: Cache downloaded files (by hash/size/timestamp)
-            ssh_agent: If ``True``, enable usage of keys via ssh-agent
+            ssh_agent: If :const:`True`, enable usage of keys via ssh-agent
 
         NOTE: The proxy_command and proxy_sock arguments is only available if a
         fairly new version of paramiko is used."""
@@ -513,6 +547,11 @@ class ssh(Timeout, Logger):
         self._cachedir       = os.path.join(tempfile.gettempdir(), 'pwntools-ssh-cache')
         self.cwd             = '.'
         self.cache           = cache
+
+        # Deferred attributes
+        self._platform_info = {}
+        self._aslr = None
+        self._aslr_ulimit = None
 
         misc.mkdir_p(self._cachedir)
 
@@ -574,10 +613,18 @@ class ssh(Timeout, Logger):
         self._tried_sftp = False
 
         with context.local(log_level='error'):
+            def getppid():
+                import os
+                print(os.getppid())
             try:
-                self.pid = int(self.system('echo $PPID').recv(timeout=1))
+                self.pid = int(self.process('false', preexec_fn=getppid).recvall())
             except Exception:
                 self.pid = None
+
+        try:
+            self.info_once(self.checksec())
+        except Exception:
+            self.warn_once("Couldn't check security settings on %r" % self.host)
 
     @property
     def sftp(self):
@@ -590,6 +637,10 @@ class ssh(Timeout, Logger):
         self._tried_sftp = True
         return self._sftp
 
+    @sftp.setter
+    def sftp(self, value):
+        self._sftp = value
+        self._tried_sftp = True
 
     def __enter__(self, *a):
         return self
@@ -604,8 +655,8 @@ class ssh(Timeout, Logger):
 
         Arguments:
             shell(str): Path to the shell program to run.
-                If ``None``, uses the default shell for the logged in user.
-            tty(bool): If ``True``, then a TTY is requested on the remote server.
+                If :const:`None`, uses the default shell for the logged in user.
+            tty(bool): If :const:`True`, then a TTY is requested on the remote server.
 
         Returns:
             Return a :class:`pwnlib.tubes.ssh.ssh_channel` object.
@@ -639,29 +690,29 @@ class ssh(Timeout, Logger):
                 List of arguments to pass into the process
             executable(str):
                 Path to the executable to run.
-                If ``None``, ``argv[0]`` is used.
+                If :const:`None`, ``argv[0]`` is used.
             tty(bool):
                 Request a `tty` from the server.  This usually fixes buffering problems
                 by causing `libc` to write data immediately rather than buffering it.
                 However, this disables interpretation of control codes (e.g. Ctrl+C)
                 and breaks `.shutdown`.
             cwd(str):
-                Working directory.  If ``None``, uses the working directory specified
+                Working directory.  If :const:`None`, uses the working directory specified
                 on :attr:`cwd` or set via :meth:`set_working_directory`.
             env(dict):
-                Environment variables to set in the child.  If ``None``, inherits the
+                Environment variables to set in the child.  If :const:`None`, inherits the
                 default environment.
             timeout(int):
                 Timeout to set on the `tube` created to interact with the process.
             run(bool):
-                Set to ``True`` to run the program (default).
-                If ``False``, returns the path to an executable Python script on the
+                Set to :const:`True` to run the program (default).
+                If :const:`False`, returns the path to an executable Python script on the
                 remote server which, when executed, will do it.
             stdin(int, str):
                 If an integer, replace stdin with the numbered file descriptor.
                 If a string, a open a file with the specified path and replace
                 stdin with its file descriptor.  May also be one of ``sys.stdin``,
-                ``sys.stdout``, ``sys.stderr``.  If ``None``, the file descriptor is closed.
+                ``sys.stdout``, ``sys.stderr``.  If :const:`None`, the file descriptor is closed.
             stdout(int, str):
                 See ``stdin``.
             stderr(int, str):
@@ -675,11 +726,11 @@ class ssh(Timeout, Logger):
                 Argument passed to ``preexec_fn``.
                 This **MUST** only consist of native Python objects.
             raw(bool):
-                If ``True``, disable TTY control code interpretation.
+                If :const:`True`, disable TTY control code interpretation.
             aslr(bool):
-                See ``pwnlib.tubes.process.process`` for more information.
+                See :class:`pwnlib.tubes.process.process` for more information.
             setuid(bool):
-                See ``pwnlib.tubes.process.process`` for more information.
+                See :class:`pwnlib.tubes.process.process` for more information.
             shell(bool):
                 Pass the command-line arguments to the shell.
 
@@ -771,7 +822,7 @@ class ssh(Timeout, Logger):
         if env and hasattr(env, 'items'):
             for k, v in env.items():
                 if '\x00' in k[:-1]:
-                    self.error('Inappropriate nulls in environment key %r' % (i, k))
+                    self.error('Inappropriate nulls in environment key %r' % k)
                 if '\x00' in v[:-1]:
                     self.error('Inappropriate nulls in environment value %r=%r' % (k, v))
                 env[k.rstrip('\x00')] = v.rstrip('\x00')
@@ -808,11 +859,11 @@ class ssh(Timeout, Logger):
             self.error("preexec_fn cannot be a lambda")
 
         func_src  = inspect.getsource(func).strip()
-        setuid = setuid if setuid is None else bool(setuid)
+        setuid = True if setuid is None else bool(setuid)
 
         script = r"""
 #!/usr/bin/env python2
-import os, sys, ctypes, resource, platform
+import os, sys, ctypes, resource, platform, stat
 from collections import OrderedDict
 exe   = %(executable)r
 argv  = %(argv)r
@@ -841,7 +892,7 @@ if not is_exe(exe):
     sys.stderr.write("{} is not executable or does not exist in $PATH: {}".format(exe,PATH))
     sys.exit(-1)
 
-if %(setuid)r is False:
+if not %(setuid)r:
     PR_SET_NO_NEW_PRIVS = 38
     result = ctypes.CDLL('libc.so.6').prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
 
@@ -850,10 +901,32 @@ if %(setuid)r is False:
         sys.stdout.write("Could not disable setuid: prctl(PR_SET_NO_NEW_PRIVS) failed")
         sys.exit(-1)
 
+try:
+    PR_SET_PTRACER = 0x59616d61
+    PR_SET_PTRACER_ANY = -1
+    ctypes.CDLL('libc.so.6').prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0)
+except Exception:
+    pass
+
+# Determine what UID the process will execute as
+# This is used for locating apport core dumps
+suid = os.getuid()
+sgid = os.getgid()
+st = os.stat(exe)
+if %(setuid)r:
+    if (st.st_mode & stat.S_ISUID):
+        suid = st.st_uid
+    if (st.st_mode & stat.S_ISGID):
+        sgid = st.st_gid
+
 if sys.argv[-1] == 'check':
     sys.stdout.write("1\n")
     sys.stdout.write(str(os.getpid()) + "\n")
-    sys.stdout.write(exe + '\x00')
+    sys.stdout.write(str(os.getuid()) + "\n")
+    sys.stdout.write(str(os.getgid()) + "\n")
+    sys.stdout.write(str(suid) + "\n")
+    sys.stdout.write(str(sgid) + "\n")
+    sys.stdout.write(os.path.realpath(exe) + '\x00')
     sys.stdout.flush()
 
 for fd, newfd in {0: %(stdin)r, 1: %(stdout)r, 2:%(stderr)r}.items():
@@ -880,7 +953,10 @@ except Exception:
     pass
 
 # Assume that the user would prefer to have core dumps.
-resource.setrlimit(resource.RLIMIT_CORE, (-1, -1))
+try:
+    resource.setrlimit(resource.RLIMIT_CORE, (-1, -1))
+except Exception:
+    pass
 
 %(func_src)s
 apply(%(func_name)s, %(func_args)r)
@@ -901,25 +977,33 @@ os.execve(exe, argv, os.environ)
             self.upload_data(script, tmpfile)
             return tmpfile
 
-        execve_repr = "execve(%r, %s, %s)" % (executable,
-                                              argv,
-                                              'os.environ'
-                                              if (env in (None, os.environ))
-                                              else env)
+        if self.isEnabledFor(logging.DEBUG):
+            execve_repr = "execve(%r, %s, %s)" % (executable,
+                                                  argv,
+                                                  'os.environ'
+                                                  if (env in (None, os.environ))
+                                                  else env)
+            # Avoid spamming the screen
+            if self.isEnabledFor(logging.DEBUG) and len(execve_repr) > 512:
+                execve_repr = execve_repr[:512] + '...'
+        else:
+            execve_repr = repr(executable)
 
-        # Avoid spamming the screen
-        if context.log_level >= logging.INFO and len(execve_repr) > 512:
-            execve_repr = execve_repr[:512] + '...'
+        msg = 'Starting remote process %s on %s' % (execve_repr, self.host)
 
-        with self.progress('Opening new channel: %s' % execve_repr) as h:
-
-            if not aslr:
-                self.warn_once("ASLR is disabled!")
+        with self.progress(msg) as h:
 
             script = sh_string.sh_command_with('for py in python2.7 python2 python; do test -x "$(which $py 2>&1)" && exec $py -c %s check; done; echo 2', script)
             with context.local(log_level='error'):
-                python = self.run(script, raw=raw)
-            result = safeeval.const(python.recvline())
+                python = ssh_process(self, script, tty=True, raw=True, level=self.level, timeout=self.timeout)
+
+            try:
+                result = safeeval.const(python.recvline())
+            except Exception:
+                h.failure("Process creation failed")
+                self.warn_once('Could not find a Python2 interpreter on %s\n' % self.host \
+                               + "Use ssh.run() instead of ssh.process()")
+                return None
 
             # If an error occurred, try to grab as much output
             # as we can.
@@ -936,8 +1020,27 @@ os.execve(exe, argv, os.environ)
                 h.failure("something bad happened:\n%s" % error_message)
 
             python.pid  = safeeval.const(python.recvline())
+            python.uid  = safeeval.const(python.recvline())
+            python.gid  = safeeval.const(python.recvline())
+            python.suid = safeeval.const(python.recvline())
+            python.sgid = safeeval.const(python.recvline())
             python.argv = argv
             python.executable = python.recvuntil('\x00')[:-1]
+
+            h.success('pid %i' % python.pid)
+
+        if aslr == False and setuid and (python.uid != python.suid or python.gid != python.sgid):
+            effect = "partial" if self.aslr_ulimit else "no"
+            message = "Specfied aslr=False on setuid binary %s\n" % python.executable
+            message += "This will have %s effect.  Add setuid=False to disable ASLR for debugging.\n" % effect
+
+            if self.aslr_ulimit:
+                message += "Unlimited stack size should de-randomize shared libraries."
+
+            self.warn_once(message)
+
+        elif not aslr:
+            self.warn_once("ASLR is disabled for %r!" % python.executable)
 
         return python
 
@@ -953,7 +1056,7 @@ os.execve(exe, argv, os.environ)
 
         result = self.run('export PATH=$PATH:$PWD; which %s' % program).recvall().strip()
 
-        if '/' not in result:
+        if ('/%s' % program) not in result:
             return None
 
         return result
@@ -1002,15 +1105,6 @@ os.execve(exe, argv, os.environ)
             variables are set, as well as argv[0].  In order to ensure that
             the path is *exactly* the same, it is recommended to invoke the
             process with ``argv=[]``.
-
-        Example:
-
-            >>> s =  ssh(host='example.pwnme',
-            ...         user='travis',
-            ...         password='demopass',
-            ...         cache=False)
-            >>>
-
         """
         script = '''
 from ctypes import *; libc = CDLL('libc.so.6'); print(libc.getenv(%r))
@@ -1240,8 +1334,11 @@ from ctypes import *; libc = CDLL('libc.so.6'); print(libc.getenv(%r))
             h.status("%s/%s" % (misc.size(has), misc.size(total)))
 
         if self.sftp:
-            self.sftp.get(remote, local, update)
-            return
+            try:
+                self.sftp.get(remote, local, update)
+                return
+            except IOError:
+                pass
 
         cmd = sh_string.sh_command_with('wc -c < %s', remote)
         total, exitcode = self.run_to_end(cmd)
@@ -1486,6 +1583,15 @@ from ctypes import *; libc = CDLL('libc.so.6'); print(libc.getenv(%r))
                     self.error("Could not untar %r on the remote end\n%s" % (remote_tar, message))
 
     def upload(self, file_or_directory, remote=None):
+        """upload(file_or_directory, remote=None)
+
+        Upload a file or directory to the remote host.
+
+        Arguments:
+            file_or_directory(str): Path to the file or directory to download.
+            remote(str): Local path to store the data.
+                By default, uses the working directory.
+        """
         if isinstance(file_or_directory, str):
             file_or_directory = os.path.expanduser(file_or_directory)
             file_or_directory = os.path.expandvars(file_or_directory)
@@ -1499,17 +1605,39 @@ from ctypes import *; libc = CDLL('libc.so.6'); print(libc.getenv(%r))
         self.error('%r does not exist' % file_or_directory)
 
 
-    def download(self, file_or_directory, remote=None):
+    def download(self, file_or_directory, local=None):
+        """download(file_or_directory, local=None)
+
+        Download a file or directory from the remote host.
+
+        Arguments:
+            file_or_directory(str): Path to the file or directory to download.
+            local(str): Local path to store the data.
+                By default, uses the current directory.
+        """
         if not self.sftp:
             self.error("Cannot determine remote file type without SFTP")
 
         if 0 == self.system(sh_string.sh_command_with('test -d %s', file_or_directory)).wait():
-            self.download_dir(file_or_directory, remote)
+            self.download_dir(file_or_directory, local)
         else:
-            self.download_file(file_or_directory, remote)
+            self.download_file(file_or_directory, local)
 
     put = upload
     get = download
+
+    def unlink(self, file):
+        """unlink(file)
+
+        Delete the file on the remote host
+
+        Arguments:
+            file(str): Path to the file
+        """
+        if not self.sftp:
+            self.error("unlink() is only supported if SFTP is supported")
+
+        return self.sftp.unlink(file)
 
     def libs(self, remote, directory = None):
         """Downloads the libraries referred to by a file.
@@ -1565,7 +1693,7 @@ from ctypes import *; libc = CDLL('libc.so.6'); print(libc.getenv(%r))
         s.interactive()
         s.close()
 
-    def set_working_directory(self, wd = None):
+    def set_working_directory(self, wd = None, symlink = False):
         """Sets the working directory in which future commands will
         be run (via ssh.run) and to which files will be uploaded/downloaded
         from if no path is provided
@@ -1580,6 +1708,17 @@ from ctypes import *; libc = CDLL('libc.so.6'); print(libc.getenv(%r))
         Arguments:
             wd(string): Working directory.  Default is to auto-generate a directory
                 based on the result of running 'mktemp -d' on the remote machine.
+            symlink(bool,str): Create symlinks in the new directory.
+
+                The default value, ``False``, implies that no symlinks should be
+                created.
+
+                A string value is treated as a path that should be symlinked.
+                It is passed directly to the shell on the remote end for expansion,
+                so wildcards work.
+
+                Any other value is treated as a boolean, where ``True`` indicates
+                that all files in the "old" working directory should be symlinked.
 
         Examples:
             >>> s =  ssh(host='example.pwnme',
@@ -1590,8 +1729,32 @@ from ctypes import *; libc = CDLL('libc.so.6'); print(libc.getenv(%r))
             ''
             >>> s.pwd() == cwd
             True
+
+            >>> s =  ssh(host='example.pwnme',
+            ...         user='travis',
+            ...         password='demopass')
+            >>> homedir = s.pwd()
+            >>> _=s.touch('foo')
+
+            >>> _=s.set_working_directory()
+            >>> assert s.ls() == ''
+
+            >>> _=s.set_working_directory(homedir)
+            >>> assert 'foo' in s.ls().split()
+
+            >>> _=s.set_working_directory(symlink=True)
+            >>> assert 'foo' in s.ls().split()
+            >>> assert homedir != s.pwd()
+
+            >>> symlink=os.path.join(homedir,'*')
+            >>> _=s.set_working_directory(symlink=symlink)
+            >>> assert 'foo' in s.ls().split()
+            >>> assert homedir != s.pwd()
         """
         status = 0
+
+        if symlink and not isinstance(symlink, str):
+            symlink = os.path.join(self.pwd(), '*')
 
         if not wd:
             wd, status = self.run_to_end('x=$(mktemp -d) && cd $x && chmod +x . && echo $PWD', wd='.')
@@ -1609,12 +1772,249 @@ from ctypes import *; libc = CDLL('libc.so.6'); print(libc.getenv(%r))
 
         self.info("Working directory: %r" % wd)
         self.cwd = wd
+
+        if symlink:
+            self.ln('-s', symlink, '.')
+
         return self.cwd
 
     def write(self, path, data):
-        """Wrapper around upload_data to match ``pwnlib.util.misc.write``"""
+        """Wrapper around upload_data to match :func:`pwnlib.util.misc.write`"""
         return self.upload_data(data, path)
 
     def read(self, path):
-        """Wrapper around download_data to match ``pwnlib.util.misc.read``"""
+        """Wrapper around download_data to match :func:`pwnlib.util.misc.read`"""
         return self.download_data(path)
+
+    def _init_remote_platform_info(self):
+        """Fills _platform_info, e.g.:
+
+        ::
+
+            {'distro': 'Ubuntu\n',
+             'distro_ver': '14.04\n',
+             'machine': 'x86_64',
+             'node': 'pwnable.kr',
+             'processor': 'x86_64',
+             'release': '3.11.0-12-generic',
+             'system': 'linux',
+             'version': '#19-ubuntu smp wed oct 9 16:20:46 utc 2013'}
+        """
+        if self._platform_info:
+            return
+
+        def preexec():
+            import platform
+            print('\n'.join(platform.uname()))
+
+        with context.quiet:
+            with self.process('true', preexec_fn=preexec) as io:
+
+                self._platform_info = {
+                    'system': io.recvline().lower().strip(),
+                    'node': io.recvline().lower().strip(),
+                    'release': io.recvline().lower().strip(),
+                    'version': io.recvline().lower().strip(),
+                    'machine': io.recvline().lower().strip(),
+                    'processor': io.recvline().lower().strip(),
+                    'distro': 'Unknown',
+                    'distro_ver': ''
+                }
+
+            try:
+                if not self.which('lsb_release'):
+                    return
+
+                with self.process(['lsb_release', '-irs']) as io:
+                    self._platform_info.update({
+                        'distro': io.recvline().strip(),
+                        'distro_ver': io.recvline().strip()
+                    })
+            except Exception:
+                pass
+
+    @property
+    def os(self):
+        """:class:`str`: Operating System of the remote machine."""
+        try:
+            self._init_remote_platform_info()
+            with context.local(os=self._platform_info['system']):
+                return context.os
+        except Exception:
+            return "Unknown"
+
+
+    @property
+    def arch(self):
+        """:class:`str`: CPU Architecture of the remote machine."""
+        try:
+            self._init_remote_platform_info()
+            with context.local(arch=self._platform_info['machine']):
+                return context.arch
+        except Exception:
+            return "Unknown"
+
+    @property
+    def bits(self):
+        """:class:`str`: Pointer size of the remote machine."""
+        try:
+            with context.local():
+                context.clear()
+                context.arch = self.arch
+                return context.bits
+        except Exception:
+            return context.bits
+
+    @property
+    def version(self):
+        """:class:`tuple`: Kernel version of the remote machine."""
+        try:
+            self._init_remote_platform_info()
+            vers = self._platform_info['release']
+
+            # 3.11.0-12-generic
+            expr = r'([0-9]+\.?)+'
+
+            vers = re.search(expr, vers).group()
+            return tuple(map(int, vers.split('.')))
+
+        except Exception:
+            return (0,0,0)
+
+    @property
+    def distro(self):
+        """:class:`tuple`: Linux distribution name and release."""
+        try:
+            self._init_remote_platform_info()
+            return (self._platform_info['distro'], self._platform_info['distro_ver'])
+        except Exception:
+            return ("Unknown", "Unknown")
+
+    @property
+    def aslr(self):
+        """:class:`bool`: Whether ASLR is enabled on the system.
+
+        Example:
+
+            >>> s = ssh("esoteric3", "wargame.w3challs.com", 20202, "esoteric3")
+            >>> s.aslr
+            True
+        """
+        if self._aslr is None:
+            if self.os != 'linux':
+                self.warn_once("Only Linux is supported for ASLR checks.")
+                self._aslr = False
+
+            else:
+                with context.quiet:
+                    rvs = self.read('/proc/sys/kernel/randomize_va_space')
+
+                self._aslr = not rvs.startswith('0')
+
+        return self._aslr
+
+    @property
+    def aslr_ulimit(self):
+        """:class:`bool`: Whether the entropy of 32-bit processes can be reduced with ulimit."""
+        import pwnlib.elf.elf
+        import pwnlib.shellcraft
+
+        if self._aslr_ulimit is not None:
+            return self._aslr_ulimit
+
+        # This test must run a 32-bit binary, fix the architecture
+        arch = {
+            'amd64': 'i386',
+            'aarch64': 'arm'
+        }.get(self.arch, self.arch)
+
+        with context.local(arch=arch, bits=32, os=self.os, aslr=True):
+            with context.quiet:
+                try:
+                    sc = pwnlib.shellcraft.cat('/proc/self/maps') \
+                       + pwnlib.shellcraft.exit(0)
+
+                    elf = pwnlib.elf.elf.ELF.from_assembly(sc, shared=True)
+                except Exception:
+                    self.warn_once("Can't determine ulimit ASLR status")
+                    self._aslr_ulimit = False
+                    return self._aslr_ulimit
+
+                def preexec():
+                    import resource
+                    try:
+                        resource.setrlimit(resource.RLIMIT_STACK, (-1, -1))
+                    except Exception:
+                        pass
+
+                # Move to a new temporary directory
+                cwd = self.cwd
+                tmp = self.set_working_directory()
+
+                try:
+                    self.upload(elf.path, './aslr-test')
+                except IOError:
+                    self.warn_once("Couldn't check ASLR ulimit trick")
+                    self._aslr_ulimit = False
+                    return False
+
+                self.process(['chmod', '+x', './aslr-test']).wait()
+                maps = self.process(['./aslr-test'], preexec_fn=preexec).recvall()
+
+                # Move back to the old directory
+                self.cwd = cwd
+
+                # Clean up the files
+                self.process(['rm', '-rf', tmp]).wait()
+
+        # Check for 555555000 (1/3 of the address space for PAE)
+        # and for 40000000 (1/3 of the address space with 3BG barrier)
+        self._aslr_ulimit = bool('55555000' in maps or '40000000' in maps)
+
+        return self._aslr_ulimit
+
+    def _checksec_cache(self, value=None):
+        path = self._get_cachefile('%s-%s' % (self.host, self.port))
+
+        if value is not None:
+            with open(path, 'w+') as f:
+                f.write(value)
+        else:
+            with open(path, 'r+') as f:
+                return f.read()
+
+    def checksec(self, banner=True):
+        """checksec()
+
+        Prints a helpful message about the remote system.
+
+        Arguments:
+            banner(bool): Whether to print the path to the ELF binary.
+        """
+        cached = self._checksec_cache()
+        if cached:
+            return cached
+
+        red    = text.red
+        green  = text.green
+        yellow = text.yellow
+
+        res = [
+            "%s@%s:" % (self.user, self.host),
+            "Distro".ljust(10) + ' '.join(self.distro),
+            "OS:".ljust(10) + self.os,
+            "Arch:".ljust(10) + self.arch,
+            "Version:".ljust(10) + '.'.join(map(str, self.version)),
+
+            "ASLR:".ljust(10) + {
+                True: green("Enabled"),
+                False: red("Disabled")
+            }[self.aslr]
+        ]
+
+        if self.aslr_ulimit:
+            res += [ "Note:".ljust(10) + red("Susceptible to ASLR ulimit trick (CVE-2016-3672)")]
+
+        cached = '\n'.join(res)
+        self._checksec_cache(cached)
+        return cached

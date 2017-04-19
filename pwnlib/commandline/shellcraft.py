@@ -1,12 +1,16 @@
 #!/usr/bin/env python2
+from __future__ import absolute_import
+
 import argparse
 import os
 import sys
 import types
 
-from pwn import *
+import pwnlib
+pwnlib.args.free_form = False
 
-from . import common
+from pwn import *
+from pwnlib.commandline import common
 
 
 #  ____  _          _ _                 __ _
@@ -168,7 +172,7 @@ def get_template(name):
 
 def is_not_a_syscall_template(name):
     template_src = shellcraft._get_source(name)
-    return 'man 2' not in read(template_src)
+    return '/syscalls' not in template_src
 
 def main(args):
     if args.list:

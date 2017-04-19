@@ -9,9 +9,11 @@ The table below shows which release corresponds to each branch, and what date th
 
 | Version          | Branch   | Release Date           |
 | ---------------- | -------- | ---------------------- |
-| [3.6.0](#350)    | `dev`    | May 6, 2017 (planned)
-| [3.5.0](#350)    | `beta`   | Mar 25, 2017 (planned)
-| [3.4.1](#341)    | `stable` | Feb 17, 2017
+| [3.7.0](#350)    | `dev`    | Jun 17, 2017 (planned)
+| [3.6.0](#350)    | `beta`   | May 6, 2017 (planned)
+| [3.5.1](#351)    | `stable` | Apr 15, 2017
+| [3.5.0](#350)    |          | Mar 26, 2017
+| [3.4.1](#341)    |          | Feb 17, 2017
 | [3.4.0](#340)    |          | Feb 13, 2017
 | [3.3.4](#334)    |          | Jan 12, 2016
 | [3.3.3](#333)    |          | Jan 10, 2016
@@ -29,14 +31,113 @@ The table below shows which release corresponds to each branch, and what date th
 | [3.0.0](#300)    |          | Aug 20, 2016
 | [2.2.0](#220)    |          | Jan 5, 2015
 
+## 3.7.0
+
+To be on Jun 17, 2017.
 
 ## 3.6.0
 
 To be released on May 6, 2017.
 
+- [#895][895] Added a Dockerfile to simplify testing setup and allow testing on OSX
+- [#897][897] Fixed some incorrect AArch64 syscals
+- [#893][893] Added the `pwnlib.config` module
+    + Configuration options can now be set in `~/.pwn.conf`
+    + This replaces the old, **undocumented** mechanism for changing logging colors.  Only @br0ns and @ebeip90 were likely using this.
+    + More information is available in the documentation [here](http://docs.pwntools.com/en/dev/config.html).
+- [#899][899] Pwntools now uses Unicorn Engine to emulate PLT instructions to ensure correct mapping of PIE / RELRO binaries.
+- [#904][904] Enhancements to the accuracy of the `pwn checksec` command.
+- [#905][905] Added a `pwn debug` command-line utility which automates the process of `gdb.attach(process(...))` to spawn GDB
+    + More information is available in the documentation [here](http://docs.pwntools.com/en/dev/commandline.html#pwn-debug)
+- [#919][919] Added a `pwn template` command-line utility to simplify the process of bootstrapping a new exploit.
+    + More information is available in the documentation [here](http://docs.pwntools.com/en/dev/commandline.html#pwn-template).
+
+[895]: https://github.com/Gallopsled/pwntools/pull/895
+[897]: https://github.com/Gallopsled/pwntools/pull/897
+[893]: https://github.com/Gallopsled/pwntools/pull/893
+[899]: https://github.com/Gallopsled/pwntools/pull/899
+[904]: https://github.com/Gallopsled/pwntools/pull/904
+[905]: https://github.com/Gallopsled/pwntools/pull/905
+[919]: https://github.com/Gallopsled/pwntools/pull/919
+
+## 3.5.1
+
+- [#945][945] Speed up ssh via caching checksec results (fixes [#944][944])
+- [#950][950] Fixes a bug where setting `context.arch` does not have an effect on `adb.compile()` output architecture
+
+[944]: https://github.com/Gallopsled/pwntools/issues/944
+[945]: https://github.com/Gallopsled/pwntools/pull/945
+[950]: https://github.com/Gallopsled/pwntools/pull/950
+
 ## 3.5.0
 
-To be released on Mar 25, 2017.
+- [b584ca3][b584ca3] Fixed an issue running `setup.py` on ARM
+- [#822][822] Enabled relative leaks with `MemLeak`
+    + This should be useful for e.g. heap-relative leaks
+- [#832][832] Changed all internal imports to use absolute imports (no functional changes)
+- [a12d0b6][a12d0b6] Move `STDOUT`, `PIPE`, `PTY` constants to globals
+    + `process(..., stdin=process.PTY)` --> `process(..., stdin=PTY)`
+- [#828][828] Use `PR_SET_PTRACER` for all `process()` and `ssh.process()` instances
+    + This simplifies debugging on systems with YAMA ptrace enabled
+- Various documentation enhancements
+    + In particular, the [gdb][gdb], [elf][elf], and [ssh][ssh] docs are much better
+- [#833][833] Performance enhancements for `adb` module
+- [d0267f3][d0267f3] `packing.fit()` now treats large offsets as cyclic patterns (e.g. `0x61616161` behaves the same as `"aaaa"`)
+- [#835][835] Added `ssh.checksec`
+    + Reports the kernel version and other relevant information on connection
+- [#857][857] Slightly shortened `execve` shellcode
+- [300f8e0][300f8e0] Slightly speed up processing of large ELF files
+- [#861][861] Adds support for extracting `IKCONFIG` configs from Linux kernel images, and extends `checksec` to report on any insecure configurations discovered
+- [#871][871] Moves all of the basic syscall templates to `shellcraft/common` and exposes them via symlinks.  Closed [#685][685]
+    + Should not have any visible effects from any documented APIs
+    + `shellcraft.arch.os.syscall_function()` still works the same
+    + We now have the ability to differentiate between the `connect` syscall, and a TCP `connect` helper
+- [#887][887] `sh_string` now returns a quoted empty string `''` rather than just an empty string
+- [#839][839] Exposes a huge amount of functionality via corefiles which was not previously availble.  See the [docs][corefile_docs] for examples.
+    + `process().corefile` will automatically instantiate a Corefile for the process
+    + QEMU-emulated processes are supported
+    + Native processes are supported, including extraction of coredumps from `apport` crash logs
+    + Native processes can be dumped *while running*, in a manner similar to `GDB`'s `gcore` script
+- [#875][857] Added [documentation][aarch64] (and tests) for AArch64 shellcode
+- [#882][882] The `ROP` class now respects `context.bytes` instead of using the hard-coded value of `4` (fixed [#879][879])
+- [#869][869] Added several fields to the `process` class (`uid`, `gid`, `suid`, `sgid`) which are recorded at execution time, based on the file permissions
+- [#868][868] Changed the way that `ssh.process()` works internally, and it now returns a more specialized class, `ssh_process`.
+    + Added `ssh_process.corefile` for fetching remote corefiles
+    + Added `ssh_process.ELF` for getting an ELF of the remote executable
+    + The `uid`, `gid`, and `suid`, and `sgid` which are recorded at execution time, based on the file permissions
+- [#865][865] Fixes `ELF.read` to support contiguous memory reads across non-contiguous file-backed segments
+- [#862][862] Adds a `symlink=` argument to `ssh.set_working_directory`, which will automatically symlink all of the files in the "old" working directory into the "new" working directory
+
+[ssh]: http://docs.pwntools.com/en/dev/tubes/ssh.html
+[gdb]: http://docs.pwntools.com/en/dev/gdb.html
+[elf]: http://docs.pwntools.com/en/dev/elf.html
+[corefile_docs]: http://docs.pwntools.com/en/dev/elf/corefile.html
+[aarch64]: http://docs.pwntools.com/en/dev/shellcraft/aarch64.html
+
+[685]: https://github.com/Gallopsled/pwntools/pull/685
+[822]: https://github.com/Gallopsled/pwntools/pull/822
+[828]: https://github.com/Gallopsled/pwntools/pull/828
+[832]: https://github.com/Gallopsled/pwntools/pull/832
+[833]: https://github.com/Gallopsled/pwntools/pull/833
+[835]: https://github.com/Gallopsled/pwntools/pull/835
+[839]: https://github.com/Gallopsled/pwntools/pull/839
+[857]: https://github.com/Gallopsled/pwntools/pull/857
+[861]: https://github.com/Gallopsled/pwntools/pull/861
+[862]: https://github.com/Gallopsled/pwntools/pull/862
+[865]: https://github.com/Gallopsled/pwntools/pull/865
+[868]: https://github.com/Gallopsled/pwntools/pull/868
+[869]: https://github.com/Gallopsled/pwntools/pull/869
+[871]: https://github.com/Gallopsled/pwntools/pull/871
+[875]: https://github.com/Gallopsled/pwntools/pull/857
+[879]: https://github.com/Gallopsled/pwntools/issues/879
+[882]: https://github.com/Gallopsled/pwntools/pull/882
+[887]: https://github.com/Gallopsled/pwntools/pull/887
+
+
+[b584ca3]: https://github.com/Gallopsled/pwntools/commit/b584ca3
+[a12d0b6]: https://github.com/Gallopsled/pwntools/commit/a12d0b6
+[d0267f3]: https://github.com/Gallopsled/pwntools/commit/d0267f3
+[300f8e0]: https://github.com/Gallopsled/pwntools/commit/300f8e0
 
 ## 3.4.1
 
@@ -46,7 +147,6 @@ To be released on Mar 25, 2017.
 [e021f57]: https://github.com/Gallopsled/pwntools/commit/e021f57
 [894]: https://github.com/Gallopsled/pwntools/pull/894
 [891]: https://github.com/Gallopsled/pwntools/issues/891
-
 
 ## 3.4.0
 

@@ -2,7 +2,7 @@
 ![pwntools logo](https://github.com/Gallopsled/pwntools/blob/stable/docs/source/logo.png?raw=true)
 
 [![Docs](https://readthedocs.org/projects/pwntools/badge/?version=stable)](https://docs.pwntools.com/)
-[![PyPI](https://img.shields.io/badge/pypi-v3.4.1-green.svg?style=flat)](https://pypi.python.org/pypi/pwntools/)
+[![PyPI](https://img.shields.io/badge/pypi-v3.5.1-green.svg?style=flat)](https://pypi.python.org/pypi/pwntools/)
 [![Travis](https://travis-ci.org/Gallopsled/pwntools.svg)](https://travis-ci.org/Gallopsled/pwntools)
 [![Coveralls](https://img.shields.io/coveralls/Gallopsled/pwntools/dev.svg)](https://coveralls.io/github/Gallopsled/pwntools?branch=dev)
 [![Twitter](https://img.shields.io/badge/twitter-pwntools-4099FF.svg?style=flat)](https://twitter.com/pwntools)
@@ -38,7 +38,8 @@ Most of the functionality of pwntools is self-contained and Python-only.  You sh
 
 ```sh
 apt-get update
-apt-get install python2.7 python-pip python-dev git libssl-dev libffi-dev
+apt-get install python2.7 python-pip python-dev git libssl-dev libffi-dev build-essential
+pip install --upgrade pip
 pip install --upgrade pwntools
 ```
 

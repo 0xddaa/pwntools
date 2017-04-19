@@ -39,6 +39,8 @@ Disassembly
     '   0:   b8 0b 00 00 00          mov    eax,0xb'
 
 """
+from __future__ import absolute_import
+
 import errno
 import os
 import platform
@@ -53,11 +55,11 @@ from glob import glob
 from os import environ
 from os import path
 
-from . import atexit
-from . import shellcraft
-from .context import LocalContext
-from .context import context
-from .log import getLogger
+from pwnlib import atexit
+from pwnlib import shellcraft
+from pwnlib.context import LocalContext
+from pwnlib.context import context
+from pwnlib.log import getLogger
 
 log = getLogger(__name__)
 
@@ -71,6 +73,11 @@ def dpkg_search_for_binutils(arch, util):
 
     Returns:
         A list of candidate package names.
+
+    ::
+
+        >>> pwnlib.asm.dpkg_search_for_binutils('aarch64', 'as')
+        ['binutils-aarch64-linux-gnu']
     """
 
     # Example output:
@@ -97,6 +104,16 @@ def dpkg_search_for_binutils(arch, util):
 def print_binutils_instructions(util, context):
     """On failure to find a binutils utility, inform the user of a way
     they can get it easily.
+
+    Doctest:
+
+        >>> context.clear(arch = 'amd64')
+        >>> pwnlib.asm.print_binutils_instructions('as', context)
+        Traceback (most recent call last):
+        ...
+        PwnlibException: Could not find 'as' installed for ContextType(arch = 'amd64', bits = 64, endian = 'little')
+        Try installing binutils for this architecture:
+        $ sudo apt-get install binutils
     """
     # This links to our instructions on how to manually install binutils
     # for several architectures.
@@ -173,10 +190,12 @@ def which_binutils(util):
     for arch in arches:
         for gutil in utils:
             # e.g. objdump
-            if arch is None: pattern = gutil
+            if arch is None:
+                pattern = gutil
 
             # e.g. aarch64-linux-gnu-objdump
-            else:       pattern = '%s*linux*-%s' % (arch,gutil)
+            else:
+                pattern = '%s*linux*-%s' % (arch,gutil)
 
             for dir in environ['PATH'].split(':'):
                 res = sorted(glob(path.join(dir, pattern)))
@@ -380,16 +399,14 @@ def cpp(shellcode):
 
     Examples:
 
-        .. doctest::
-
-            >>> cpp("mov al, SYS_setresuid", arch = "i386", os = "linux")
-            'mov al, 164\n'
-            >>> cpp("weee SYS_setresuid", arch = "arm", os = "linux")
-            'weee (0+164)\n'
-            >>> cpp("SYS_setresuid", arch = "thumb", os = "linux")
-            '(0+164)\n'
-            >>> cpp("SYS_setresuid", os = "freebsd")
-            '311\n'
+        >>> cpp("mov al, SYS_setresuid", arch = "i386", os = "linux")
+        'mov al, 164\n'
+        >>> cpp("weee SYS_setresuid", arch = "arm", os = "linux")
+        'weee (0+164)\n'
+        >>> cpp("SYS_setresuid", arch = "thumb", os = "linux")
+        '(0+164)\n'
+        >>> cpp("SYS_setresuid", os = "freebsd")
+        '311\n'
     """
     arch = context.arch
     os   = context.os
@@ -406,17 +423,39 @@ def cpp(shellcode):
     return _run(cmd, code).strip('\n').rstrip() + '\n'
 
 @LocalContext
-def make_elf_from_assembly(assembly, vma = None, extract=False, shared = False):
-    r"""
-    Builds an ELF file with the specified assembly as its
-    executable code.
+def make_elf_from_assembly(assembly,
+                           vma=None,
+                           extract=False,
+                           shared=False,
+                           strip=False,
+                           **kwargs):
+    r"""make_elf_from_assembly(assembly, vma=None, extract=None, shared=False, strip=False, **kwargs) -> str
+
+    Builds an ELF file with the specified assembly as its executable code.
+
+    This differs from :func:`.make_elf` in that all ELF symbols are preserved,
+    such as labels and local variables.  Use :func:`.make_elf` if size matters.
+    Additionally, the default value for ``extract`` in :func:`.make_elf` is
+    different.
+
+    Note:
+        This is effectively a wrapper around :func:`.asm`. with setting
+        ``extract=False``, ``vma=0x10000000``, and marking the resulting
+        file as executable (``chmod +x``).
+
+    Note:
+        ELF files created with `arch=thumb` will prepend an ARM stub
+        which switches to Thumb mode.
 
     Arguments:
-
-        assembly(str): Assembly
+        assembly(str): Assembly code to build into an ELF
         vma(int): Load address of the binary
-        extract(bool): Whether to return the data extracted from the file created,
-                       or the path to it.
+            (Default: ``0x10000000``, or ``0`` if ``shared=True``)
+        extract(bool): Extract the full ELF data from the file.
+            (Default: ``False``)
+        shared(bool): Create a shared library
+            (Default: ``False``)
+        kwargs(dict): Arguments to pass to :func:`.asm`.
 
     Returns:
 
@@ -424,6 +463,9 @@ def make_elf_from_assembly(assembly, vma = None, extract=False, shared = False):
         of the assembled ELF.
 
     Example:
+
+        This example shows how to create a shared library, and load it via
+        ``LD_PRELOAD``.
 
         >>> context.clear()
         >>> context.arch = 'amd64'
@@ -433,6 +475,18 @@ def make_elf_from_assembly(assembly, vma = None, extract=False, shared = False):
         >>> solib = make_elf_from_assembly(sc, shared=1)
         >>> subprocess.check_output(['echo', 'World'], env={'LD_PRELOAD': solib})
         'Hello\nWorld\n'
+
+        The same thing can be done with :func:`.make_elf`, though the sizes
+        are different.  They both
+
+        >>> file_a = make_elf(asm('nop'), extract=True)
+        >>> file_b = make_elf_from_assembly('nop', extract=True)
+        >>> file_a[:4] == file_b[:4]
+        True
+        >>> len(file_a) < 0x200
+        True
+        >>> len(file_b) > 0x1000
+        True
     """
     if shared and vma:
         log.error("Cannot specify a VMA for a shared library.")
@@ -449,38 +503,44 @@ def make_elf_from_assembly(assembly, vma = None, extract=False, shared = False):
         if not assembly.startswith(to_thumb):
             assembly = to_thumb + assembly
 
-    path = asm(assembly, vma = vma, extract = extract, shared = shared)
+    result = asm(assembly, vma = vma, shared = shared, extract = False, **kwargs)
 
     if not extract:
-        os.chmod(path, 0755)
+        os.chmod(result, 0755)
+    else:
+        with open(result, 'rb') as io:
+            result = io.read()
 
-    return path
+    return result
 
 @LocalContext
-def make_elf(data, vma = None, strip=True, extract=True, shared=False):
-    r"""
-    Builds an ELF file with the specified binary data as its
-    executable code.
+def make_elf(data,
+             vma=None,
+             strip=True,
+             extract=True,
+             shared=False):
+    r"""make_elf(data, vma=None, strip=True, extract=True, shared=False, **kwargs) -> str
+
+    Builds an ELF file with the specified binary data as its executable code.
 
     Arguments:
         data(str): Assembled code
         vma(int):  Load address for the ELF file
+        strip(bool): Strip the resulting ELF file. Only matters if ``extract=False``.
+            (Default: ``True``)
+        extract(bool): Extract the assembly from the ELF file.
+            If ``False``, the path of the ELF file is returned.
+            (Default: ``True``)
+        shared(bool): Create a Dynamic Shared Object (DSO, i.e. a ``.so``)
+            which can be loaded via ``dlopen`` or ``LD_PRELOAD``.
 
     Examples:
-
         This example creates an i386 ELF that just does
         execve('/bin/sh',...).
 
-        >>> context.clear()
-        >>> context.arch = 'i386'
-        >>> context.bits = 32
-        >>> filename = tempfile.mktemp()
+        >>> context.clear(arch='i386')
         >>> bin_sh = '6a68682f2f2f73682f62696e89e331c96a0b5899cd80'.decode('hex')
-        >>> data = make_elf(bin_sh)
-        >>> with open(filename,'wb+') as f:
-        ...     f.write(data)
-        ...     f.flush()
-        >>> os.chmod(filename,0777)
+        >>> filename = make_elf(bin_sh, extract=False)
         >>> p = process(filename)
         >>> p.sendline('echo Hello; exit')
         >>> p.recvline()
@@ -548,38 +608,37 @@ def make_elf(data, vma = None, strip=True, extract=True, shared=False):
 
 @LocalContext
 def asm(shellcode, vma = 0, extract = True, shared = False):
-    r"""asm(code, vma = 0, extract = True, ...) -> str
+    r"""asm(code, vma = 0, extract = True, shared = False, ...) -> str
 
     Runs :func:`cpp` over a given shellcode and then assembles it into bytes.
 
     To see which architectures or operating systems are supported,
     look in :mod:`pwnlib.contex`.
 
-    To support all these architecture, we bundle the GNU assembler
-    and objcopy with pwntools.
+    Assembling shellcode requires that the GNU assembler is installed
+    for the target architecture.
+    See :doc:`Installing Binutils </install/binutils>` for more information.
 
     Arguments:
-      shellcode(str): Assembler code to assemble.
-      vma(int):       Virtual memory address of the beginning of assembly
-      extract(bool):  Extract the raw assembly bytes from the assembled
-                      file.  If ``False``, returns the path to an ELF file
-                      with the assembly embedded.
-
-    Kwargs:
-        Any arguments/properties that can be set on ``context``
+        shellcode(str): Assembler code to assemble.
+        vma(int):       Virtual memory address of the beginning of assembly
+        extract(bool):  Extract the raw assembly bytes from the assembled
+                        file.  If :const:`False`, returns the path to an ELF file
+                        with the assembly embedded.
+        shared(bool):   Create a shared object.
+        kwargs(dict):   Any attributes on :data:`.context` can be set, e.g.set
+                        ``arch='arm'``.
 
     Examples:
 
-        .. doctest::
-
-            >>> asm("mov eax, SYS_select", arch = 'i386', os = 'freebsd')
-            '\xb8]\x00\x00\x00'
-            >>> asm("mov eax, SYS_select", arch = 'amd64', os = 'linux')
-            '\xb8\x17\x00\x00\x00'
-            >>> asm("mov rax, SYS_select", arch = 'amd64', os = 'linux')
-            'H\xc7\xc0\x17\x00\x00\x00'
-            >>> asm("mov r0, #SYS_select", arch = 'arm', os = 'linux', bits=32)
-            'R\x00\xa0\xe3'
+        >>> asm("mov eax, SYS_select", arch = 'i386', os = 'freebsd')
+        '\xb8]\x00\x00\x00'
+        >>> asm("mov eax, SYS_select", arch = 'amd64', os = 'linux')
+        '\xb8\x17\x00\x00\x00'
+        >>> asm("mov rax, SYS_select", arch = 'amd64', os = 'linux')
+        'H\xc7\xc0\x17\x00\x00\x00'
+        >>> asm("mov r0, #SYS_select", arch = 'arm', os = 'linux', bits=32)
+        'R\x00\xa0\xe3'
     """
     result = ''
 
@@ -611,11 +670,20 @@ def asm(shellcode, vma = 0, extract = True, shared = False):
             ldflags = ['-z', 'execstack', '-o', step3, step2]
             if vma:
                 ldflags += ['--section-start=.shellcode=%#x' % vma,
-                            '--entry=%#x' % vma,
-                            '-z', 'max-page-size=4096',
-                            '-z', 'common-page-size=4096']
+                            '--entry=%#x' % vma]
             elif shared:
                 ldflags += ['-shared', '-init=_start']
+
+            # In order to ensure that we generate ELF files with 4k pages,
+            # and not e.g. 65KB pages (AArch64), force the page size.
+            # This is a result of GNU Gold being silly.
+            #
+            # Introduced in commit dd58f409 without supporting evidence,
+            # this shouldn't do anything except keep consistent page granularity
+            # across architectures.
+            ldflags += ['-z', 'max-page-size=4096',
+                        '-z', 'common-page-size=4096']
+
             _run(linker + ldflags)
 
         elif file(step2,'rb').read(4) == '\x7fELF':
@@ -667,24 +735,21 @@ def disasm(data, vma = 0, byte = True, offset = True, instructions = True):
 
     Examples:
 
-        .. doctest::
-
-          >>> print disasm('b85d000000'.decode('hex'), arch = 'i386')
-             0:   b8 5d 00 00 00          mov    eax,0x5d
-          >>> print disasm('b85d000000'.decode('hex'), arch = 'i386', byte = 0)
-             0:   mov    eax,0x5d
-          >>> print disasm('b85d000000'.decode('hex'), arch = 'i386', byte = 0, offset = 0)
-          mov    eax,0x5d
-          >>> print disasm('b817000000'.decode('hex'), arch = 'amd64')
-             0:   b8 17 00 00 00          mov    eax,0x17
-          >>> print disasm('48c7c017000000'.decode('hex'), arch = 'amd64')
-             0:   48 c7 c0 17 00 00 00    mov    rax,0x17
-          >>> print disasm('04001fe552009000'.decode('hex'), arch = 'arm')
-             0:   e51f0004        ldr     r0, [pc, #-4]   ; 0x4
-             4:   00900052        addseq  r0, r0, r2, asr r0
-          >>> print disasm('4ff00500'.decode('hex'), arch = 'thumb', bits=32)
-             0:   f04f 0005       mov.w   r0, #5
-          >>>
+        >>> print disasm('b85d000000'.decode('hex'), arch = 'i386')
+           0:   b8 5d 00 00 00          mov    eax,0x5d
+        >>> print disasm('b85d000000'.decode('hex'), arch = 'i386', byte = 0)
+           0:   mov    eax,0x5d
+        >>> print disasm('b85d000000'.decode('hex'), arch = 'i386', byte = 0, offset = 0)
+        mov    eax,0x5d
+        >>> print disasm('b817000000'.decode('hex'), arch = 'amd64')
+           0:   b8 17 00 00 00          mov    eax,0x17
+        >>> print disasm('48c7c017000000'.decode('hex'), arch = 'amd64')
+           0:   48 c7 c0 17 00 00 00    mov    rax,0x17
+        >>> print disasm('04001fe552009000'.decode('hex'), arch = 'arm')
+           0:   e51f0004        ldr     r0, [pc, #-4]   ; 0x4
+           4:   00900052        addseq  r0, r0, r2, asr r0
+        >>> print disasm('4ff00500'.decode('hex'), arch = 'thumb', bits=32)
+           0:   f04f 0005       mov.w   r0, #5
     """
     result = ''
 

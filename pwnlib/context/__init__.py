@@ -4,6 +4,8 @@
 Implements context management so that nested/scoped contexts and threaded
 contexts work properly and as expected.
 """
+from __future__ import absolute_import
+
 import collections
 import functools
 import logging
@@ -19,8 +21,8 @@ import time
 
 import socks
 
-from ..device import Device
-from ..timeout import Timeout
+from pwnlib.device import Device
+from pwnlib.timeout import Timeout
 
 _original_socket = socket.socket
 
@@ -261,7 +263,7 @@ class ContextType(object):
     r"""
     Class for specifying information about the target machine.
     Intended for use as a pseudo-singleton through the global
-    variable ``pwnlib.context.context``, available via
+    variable :data:`.context`, available via
     ``from pwn import *`` as ``context``.
 
     The context is usually specified at the top of the Python file for clarity. ::
@@ -331,6 +333,7 @@ class ContextType(object):
         'binary': None,
         'bits': 32,
         'buffer_size': 4096,
+        'delete_corefiles': False,
         'device': os.getenv('ANDROID_SERIAL', None) or None,
         'endian': 'little',
         'kernel': None,
@@ -338,6 +341,7 @@ class ContextType(object):
         'log_file': _devnull(),
         'log_console': sys.stdout,
         'randomize': False,
+        'rename_corefiles': True,
         'newline': '\n',
         'noptrace': False,
         'os': 'linux',
@@ -528,12 +532,13 @@ class ContextType(object):
     def quiet(self, function=None):
         """Disables all non-error logging within the enclosed scope,
         *unless* the debugging level is set to 'debug' or lower."""
-        if not function:
-            level = 'error'
-            if context.log_level <= logging.DEBUG:
-                level = None
-            return self.local(function, log_level=level)
+        level = 'error'
+        if context.log_level <= logging.DEBUG:
+            level = None
+        return self.local(function, log_level=level)
 
+    def quietfunc(self, function):
+        """Similar to :attr:`quiet`, but wraps a whole function."""
         @functools.wraps(function)
         def wrapper(*a, **kw):
             level = 'error'
@@ -563,6 +568,7 @@ class ContextType(object):
         Examples:
 
             >>> # Default value
+            >>> context.clear()
             >>> context.arch == 'i386'
             True
             >>> context.arch = 'arm'
@@ -689,7 +695,7 @@ class ContextType(object):
         """
         ASLR settings for new processes.
 
-        If ``False``, attempt to disable ASLR in all processes which are
+        If :const:`False`, attempt to disable ASLR in all processes which are
         created via ``personality`` (``setarch -R``) and ``setrlimit``
         (``ulimit -s unlimited``).
 
@@ -756,7 +762,7 @@ class ContextType(object):
 
         """
         # Cyclic imports... sorry Idolf.
-        from ..elf     import ELF
+        from pwnlib.elf     import ELF
 
         if not isinstance(binary, ELF):
             binary = ELF(binary)
@@ -985,7 +991,7 @@ class ContextType(object):
 
         Can be set to any non-string truthy value, or the specific string
         values ``'signed'`` or ``'unsigned'`` which are converted into
-        ``True`` and ``False`` correspondingly.
+        :const:`True` and :const:`False` correspondingly.
 
         Examples:
 
@@ -1121,7 +1127,7 @@ class ContextType(object):
             self.os = device.os or self.os
         elif isinstance(device, str):
             device = Device(device)
-        else:
+        elif device is not None:
             raise AttributeError("device must be either a Device object or a serial number as a string")
 
         return device
@@ -1149,7 +1155,7 @@ class ContextType(object):
 
     @_validator
     def buffer_size(self, size):
-        """Internal buffer size to use for ``tube`` objects.
+        """Internal buffer size to use for :class:`pwnlib.tubes.tube.tube` objects.
 
         This is not the maximum size of the buffer, but this is the amount of data
         which is passed to each raw ``read`` syscall (or equivalent).
@@ -1161,7 +1167,7 @@ class ContextType(object):
         """Directory used for caching data.
 
         Note:
-            May be either a path string, or ``None``.
+            May be either a path string, or :const:`None`.
 
         Example:
 
@@ -1194,6 +1200,32 @@ class ContextType(object):
             return None
 
         return cache
+
+    @_validator
+    def delete_corefiles(self, v):
+        """Whether pwntools automatically deletes corefiles after exiting.
+        This only affects corefiles accessed via :attr:`.process.corefile`.
+
+        Default value is ``False``.
+        """
+        return bool(v)
+
+    @_validator
+    def rename_corefiles(self, v):
+        """Whether pwntools automatically renames corefiles.
+
+        This is useful for two things:
+
+        - Prevent corefiles from being overwritten, if ``kernel.core_pattern``
+          is something simple like ``"core"``.
+        - Ensure corefiles are generated, if ``kernel.core_pattern`` uses ``apport``,
+          which refuses to overwrite any existing files.
+
+        This only affects corefiles accessed via :attr:`.process.corefile`.
+
+        Default value is ``True``.
+        """
+        return bool(v)
 
     #*************************************************************************
     #                               ALIASES
@@ -1269,11 +1301,14 @@ class ContextType(object):
     Thread = Thread
 
 
-#: Global ``context`` object, used to store commonly-used pwntools settings.
+#: Global :class:`.ContextType` object, used to store commonly-used pwntools settings.
+#:
 #: In most cases, the context is used to infer default variables values.
-#: For example, :meth:`pwnlib.asm.asm` can take an ``os`` parameter as a
-#: keyword argument.  If it is not supplied, the ``os`` specified by
-#: ``context`` is used instead.
+#: For example, :func:`.asm` can take an ``arch`` parameter as a
+#: keyword argument.
+#:
+#: If it is not supplied, the ``arch`` specified by ``context`` is used instead.
+#:
 #: Consider it a shorthand to passing ``os=`` and ``arch=`` to every single
 #: function call.
 context = ContextType()

@@ -1,13 +1,12 @@
 #!/usr/bin/env python2
 # -*- coding: utf-8 -*-
 """
-# sh_string
-
 Routines here are for getting any NULL-terminated sequence of bytes evaluated
 intact by any shell.  This includes all variants of quotes, whitespace, and
 non-printable characters.
 
-## Supported Shells
+Supported Shells
+----------------
 
 The following shells have been evaluated:
 
@@ -18,50 +17,56 @@ The following shells have been evaluated:
 - OpenBSD (sh)
 - NetBSD (sh)
 
-### Debian Almquist shell (Dash)
+Debian Almquist shell (Dash)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Ubuntu 14.04 and 16.04 use the Dash shell, and /bin/sh is actually just a
 symlink to /bin/dash.  The feature set supported when invoked as "sh" instead
 of "dash" is different, and we focus exclusively on the "/bin/sh" implementation.
 
-From the [Ubuntu Man Pages][ubuntu], every character except for single-quote
+From the `Ubuntu Man Pages`_, every character except for single-quote
 can be wrapped in single-quotes, and a backslash can be used to escape unquoted
 single-quotes.
 
-   Quoting
-     Quoting is used to remove the special meaning of certain characters or
-     words to the shell, such as operators, whitespace, or keywords.  There
-     are three types of quoting: matched single quotes, matched double quotes,
-     and backslash.
+::
 
-   Backslash
-     A backslash preserves the literal meaning of the following character,
-     with the exception of ⟨newline⟩.  A backslash preceding a ⟨newline⟩ is
-     treated as a line continuation.
+    Quoting
+      Quoting is used to remove the special meaning of certain characters or
+      words to the shell, such as operators, whitespace, or keywords.  There
+      are three types of quoting: matched single quotes, matched double quotes,
+      and backslash.
 
-   Single Quotes
-     Enclosing characters in single quotes preserves the literal meaning of
-     all the characters (except single quotes, making it impossible to put
-     single-quotes in a single-quoted string).
+    Backslash
+      A backslash preserves the literal meaning of the following character,
+      with the exception of ⟨newline⟩.  A backslash preceding a ⟨newline⟩ is
+      treated as a line continuation.
 
-   Double Quotes
-     Enclosing characters within double quotes preserves the literal meaning
-     of all characters except dollarsign ($), backquote (`), and backslash
-     (\).  The backslash inside double quotes is historically weird, and
-     serves to quote only the following characters:
-           $ ` " \ <newline>.
-     Otherwise it remains literal.
+    Single Quotes
+      Enclosing characters in single quotes preserves the literal meaning of
+      all the characters (except single quotes, making it impossible to put
+      single-quotes in a single-quoted string).
 
-### GNU Bash
+    Double Quotes
+      Enclosing characters within double quotes preserves the literal meaning
+      of all characters except dollarsign ($), backquote (`), and backslash
+      (\).  The backslash inside double quotes is historically weird, and
+      serves to quote only the following characters:
+            $ ` " \ <newline>.
+      Otherwise it remains literal.
+
+GNU Bash
+~~~~~~~~
 
 The Bash shell is default on many systems, though it is not generally the default
 system-wide shell (i.e., the `system` syscall does not generally invoke it).
 
 That said, its prevalence suggests that it also be addressed.
 
-From the [GNU Bash Manual][bash], every character except for single-quote
+From the `GNU Bash Manual`_, every character except for single-quote
 can be wrapped in single-quotes, and a backslash can be used to escape unquoted
 single-quotes.
+
+::
 
     3.1.2.1 Escape Character
 
@@ -94,14 +99,17 @@ single-quotes.
     The special parameters ‘*’ and ‘@’ have special meaning when in double quotes
     see Shell Parameter Expansion).
 
-### Z Shell
+Z Shell
+~~~~~~~
 
 The Z shell is also a relatively common user shell, even though it's not generally
 the default system-wide shell.
 
-From the [Z Shell Manual][zsh], every character except for single-quote
+From the `Z Shell Manual`_, every character except for single-quote
 can be wrapped in single-quotes, and a backslash can be used to escape unquoted
 single-quotes.
+
+::
 
     A character may be quoted (that is, made to stand for itself) by preceding
     it with a ‘\’. ‘\’ followed by a newline is ignored.
@@ -123,13 +131,16 @@ single-quotes.
     Inside double quotes (""), parameter and command substitution occur, and
     ‘\’ quotes the characters ‘\’, ‘`’, ‘"’, and ‘$’.
 
-### FreeBSD Shell
+FreeBSD Shell
+~~~~~~~~~~~~~
 
 Compatibility with the FreeBSD shell is included for completeness.
 
-From the [FreeBSD man pages][freebsd], every character except for single-quote
+From the `FreeBSD man pages`_, every character except for single-quote
 can be wrapped in single-quotes, and a backslash can be used to escape unquoted
 single-quotes.
+
+::
 
      Quoting is used to remove the special meaning of certain characters or
      words to the shell, such as operators, whitespace, keywords, or alias
@@ -161,15 +172,17 @@ single-quotes.
 
      Backslash
          A backslash preserves the literal meaning of the following char-
-         acter, with the exception of the newline character (`\n').  A
+         acter, with the exception of the newline character (`\\n').  A
          backslash preceding a newline is treated as a line continuation.
 
-### OpenBSD Shell
+OpenBSD Shell
+~~~~~~~~~~~~~
 
-From the [OpenBSD Man Pages][openbsd], every character except for single-quote
+From the `OpenBSD Man Pages`_, every character except for single-quote
 can be wrapped in single-quotes, and a backslash can be used to escape unquoted
 single-quotes.
 
+::
 
     A backslash (\) can be used to quote any character except a newline.
     If a newline follows a backslash the shell removes them both, effectively
@@ -186,11 +199,13 @@ single-quotes.
     An at sign (@) within double quotes has a special meaning
     (see SPECIAL PARAMETERS, below).
 
-### NetBSD Shell
+NetBSD Shell
+~~~~~~~~~~~~
 
 The NetBSD shell's documentation is identical to the Dash documentation.
 
-### Android Shells
+Android Shells
+~~~~~~~~~~~~~~
 
 Android has gone through some number of shells.
 
@@ -200,7 +215,8 @@ Android has gone through some number of shells.
 Notably, the Toolbox implementation is not POSIX compliant
 as it lacks a "printf" builtin (e.g. Android 5.0 emulator images).
 
-### Toybox Shell
+Toybox Shell
+~~~~~~~~~~~~
 
 Android 6.0 (and possibly other versions) use a shell based on ``toybox``.
 
@@ -209,27 +225,30 @@ a POSIX-compliant ``printf`` binary.
 
 The Ash shells should be feature-compatible with ``dash``.
 
-### BusyBox Shell
+BusyBox Shell
+~~~~~~~~~~~~~
 
-[BusyBox's Wikipedia page][busybox] claims to use an ``ash``-compliant shell,
+`BusyBox's Wikipedia page`_ claims to use an ``ash``-compliant shell,
 and should therefore be compatible with ``dash``.
 
 
-[ubuntu]: http://manpages.ubuntu.com/manpages/trusty/man1/dash.1.html
-[bash]: https://www.gnu.org/software/bash/manual/bash.html#Quoting
-[zsh]: http://zsh.sourceforge.net/Doc/Release/Shell-Grammar.html#Quoting
-[freebsd]: https://www.freebsd.org/cgi/man.cgi?query=sh
-[openbsd]: http://man.openbsd.org/cgi-bin/man.cgi?query=sh#SHELL_GRAMMAR
-[busybox]: https://en.wikipedia.org/wiki/BusyBox#Features
+.. _Ubuntu Man Pages: http://manpages.ubuntu.com/manpages/trusty/man1/dash.1.html
+.. _GNU Bash Manual: https://www.gnu.org/software/bash/manual/bash.html#Quoting
+.. _Z Shell Manual: http://zsh.sourceforge.net/Doc/Release/Shell-Grammar.html#Quoting
+.. _FreeBSD man pages: https://www.freebsd.org/cgi/man.cgi?query=sh
+.. _OpenBSD Man Pages: http://man.openbsd.org/cgi-bin/man.cgi?query=sh#SHELL_GRAMMAR
+.. _BusyBox's Wikipedia page: https://en.wikipedia.org/wiki/BusyBox#Features
 """
+from __future__ import absolute_import
+
 import string
 import subprocess
 
-from . import fiddling
-from ..context import context
-from ..log import getLogger
-from ..tubes.process import process
-from .misc import which
+from pwnlib.context import context
+from pwnlib.log import getLogger
+from pwnlib.tubes.process import process
+from pwnlib.util import fiddling
+from pwnlib.util.misc import which
 
 log = getLogger(__name__)
 
@@ -369,6 +388,9 @@ def sh_string(s):
     """
     if '\x00' in s:
         log.error("sh_string(): Cannot create a null-byte")
+
+    if s == '':
+        return "''"
 
     chars = set(s)
     very_good = set(string.ascii_letters + string.digits + "_+.,/")
