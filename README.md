@@ -56,11 +56,12 @@ def leak(self, delim_start='', delim_end='\n', timeout=default):
 We always need '/bin/sh' string when get the shell.
 
 ```python
-     @property
-     def binsh(self):
-         """Get the offset of '/bin/sh'."""
-         return self.search('/bin/sh').next()
+    Examples:
+
+        >>> libc = ELF('libc.so.6')
+        >>> hex(libc.binsh)
+        >>> '0x18c177'
 ```
 
 ### 2. Support full relro symbols
-`pwnlib.elf` cannot parse symbols correctly in full relro binary after one glibc version. I made a workaround to fix the issue. However, it may cause some side effect. The related discussion can see at [here](http://github.com/Gallopsled/pwntools/pull/838). The official pwntools has solved the issue with [unicorn](https://github.com/Gallopsled/pwntools/pull/899), but I think it's too heavy.
+`pwnlib.elf` cannot parse symbols correctly in full relro binary after one glibc version. I made a workaround to fix the issue. It's work for me when I solved CTF challenge. Notice, it may cause some side effect. The related discussion can see at [here](http://github.com/Gallopsled/pwntools/pull/838). The official pwntools has solved the issue with [unicorn](https://github.com/Gallopsled/pwntools/pull/899), but I think it's too heavy.
