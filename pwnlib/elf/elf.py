@@ -875,6 +875,7 @@ class ELF(ELFFile):
 
     @property
     def binsh(self):
+        """Get the offset of '/bin/sh'."""
         return self.search('/bin/sh').next()
 
 

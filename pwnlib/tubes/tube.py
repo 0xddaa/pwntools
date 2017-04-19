@@ -688,13 +688,23 @@ class tube(Timeout, Logger):
         return self.buffer.get()
 
     def leak(self, delim_start='', delim_end='\n', timeout=default):
-        """recvaddr() -> int
+        """leak() -> int
+        Leak and pack the address into an integer.
+
         arguments:
             delim_start(str): String of start delimiters characters. Receive bytes after start delimiters.
-            delim_start(str): String of end delimiters characters. The received bytes before end delimiters will be considered leaked address.
+            delim_end(str): String of end delimiters characters. The received bytes before end delimiters will be considered leaked address.
+            timeout(int): Timeout for the operation
 
         Returns:
             An integer that impied the memory address.
+
+       Examples:
+
+           >>> t = tube()
+           >>> t.unrecv('a'*10 + p32(0x1234) + '\n')
+           >>> hex(t.leak(delim_start='a'*10))
+           '0x1234'
         """
         if context.word_size == 64:
             pack = packing.u64
@@ -702,8 +712,8 @@ class tube(Timeout, Logger):
             pack = packing.u32
         else:
             raise AssertionError('Not supported.')
-        self.recvuntil(delim_start)
-        return pack(self.recvuntil(delim_end, drop=True)[:context.bytes].ljust(context.bytes, '\x00'))
+        self.recvuntil(delim_start, timeout=timeout)
+        return pack(self.recvuntil(delim_end, drop=True, timeout=timeout)[:context.bytes].ljust(context.bytes, '\x00'))
 
     def send(self, data, n=-1):
         """send(data, n)
