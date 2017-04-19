@@ -7,10 +7,10 @@ import socket
 import stat
 import string
 
-from . import fiddling
-from . import lists
-from ..context import context
-from ..log import getLogger
+from pwnlib.context import context
+from pwnlib.log import getLogger
+from pwnlib.util import fiddling
+from pwnlib.util import lists
 
 log = getLogger(__name__)
 
@@ -51,14 +51,15 @@ def binary_ip(host):
     return socket.inet_aton(socket.gethostbyname(host))
 
 
-def size(n, abbriv = 'B', si = False):
-    """size(n, abbriv = 'B', si = False) -> str
+def size(n, abbrev = 'B', si = False):
+    """size(n, abbrev = 'B', si = False) -> str
 
     Convert the length of a bytestream to human readable form.
 
     Arguments:
-      n(int,str): The length to convert to human readable form
-      abbriv(str):
+      n(int,iterable): The length to convert to human readable form,
+        or an object which can have ``len()`` called on it.
+      abbrev(str): String appended to the size, defaults to ``'B'``.
 
     Example:
         >>> size(451)
@@ -67,24 +68,30 @@ def size(n, abbriv = 'B', si = False):
         '1000B'
         >>> size(1024)
         '1.00KB'
+        >>> size(1024, ' bytes')
+        '1.00K bytes'
         >>> size(1024, si = True)
         '1.02KB'
         >>> [size(1024 ** n) for n in range(7)]
         ['1B', '1.00KB', '1.00MB', '1.00GB', '1.00TB', '1.00PB', '1024.00PB']
+        >>> size([])
+        '0B'
+        >>> size([1,2,3])
+        '3B'
     """
-    if isinstance(n, str):
+    if hasattr(n, '__len__'):
         n = len(n)
 
     base = 1000.0 if si else 1024.0
     if n < base:
-        return '%d%s' % (n, abbriv)
+        return '%d%s' % (n, abbrev)
 
     for suffix in ['K', 'M', 'G', 'T']:
         n /= base
         if n < base:
-            return '%.02f%s%s' % (n, suffix, abbriv)
+            return '%.02f%s%s' % (n, suffix, abbrev)
 
-    return '%.02fP%s' % (n / base, abbriv)
+    return '%.02fP%s' % (n / base, abbrev)
 
 KB = 1024
 MB = 1024 * KB
@@ -174,27 +181,35 @@ def run_in_new_terminal(command, terminal = None, args = None):
 
     Run a command in a new terminal.
 
-    When `terminal` is not set:
-      - If `context.terminal` is set it will be used.  If it is an iterable then
-        `context.terminal[1:]` are default arguments.
-      - If X11 is detected (by the presence of the ``DISPLAY`` environment
-        variable), ``x-terminal-emulator`` is used.
-      - If tmux is detected (by the presence of the ``TMUX`` environment
-        variable), a new pane will be opened.
+    When ``terminal`` is not set:
+        - If ``context.terminal`` is set it will be used.
+          If it is an iterable then ``context.terminal[1:]`` are default arguments.
+        - If a ``pwntools-terminal`` command exists in ``$PATH``, it is used
+        - If ``$TERM_PROGRAM`` is set, that is used.
+        - If X11 is detected (by the presence of the ``$DISPLAY`` environment
+          variable), ``x-terminal-emulator`` is used.
+        - If tmux is detected (by the presence of the ``$TMUX`` environment
+          variable), a new pane will be opened.
 
     Arguments:
-      command (str): The command to run.
-      terminal (str): Which terminal to use.
-      args (list): Arguments to pass to the terminal
+        command (str): The command to run.
+        terminal (str): Which terminal to use.
+        args (list): Arguments to pass to the terminal
+
+    Note:
+        The command is opened with ``/dev/null`` for stdin, stdout, stderr.
 
     Returns:
-      None
+      PID of the new terminal process
     """
 
     if not terminal:
         if context.terminal:
             terminal = context.terminal[0]
             args     = context.terminal[1:]
+        elif which('pwntools-terminal'):
+            terminal = 'pwntools-terminal'
+            args     = []
         elif 'DISPLAY' in os.environ:
             terminal = 'x-terminal-emulator'
             args     = ['-e']
@@ -223,14 +238,19 @@ def run_in_new_terminal(command, terminal = None, args = None):
 
     log.debug("Launching a new terminal: %r" % argv)
 
-    if os.fork() == 0:
+    pid = os.fork()
+
+    if pid == 0:
         # Closing the file descriptors makes everything fail under tmux on OSX.
         if platform.system() != 'Darwin':
-            os.close(0)
-            os.close(1)
-            os.close(2)
+            devnull = open(os.devnull, 'rwb')
+            os.dup2(devnull.fileno(), 0)
+            os.dup2(devnull.fileno(), 1)
+            os.dup2(devnull.fileno(), 2)
         os.execv(argv[0], argv)
         os._exit(1)
+
+    return pid
 
 def parse_ldd_output(output):
     """Parses the output from a run of 'ldd' on a binary.

@@ -1,7 +1,9 @@
+from __future__ import absolute_import
+
 import re
 
-from ..context import context
-from ..util.misc import register_sizes
+from pwnlib.context import context
+from pwnlib.util.misc import register_sizes
 
 mips = {
     '$0' :  0, '$zero': 0,
@@ -202,6 +204,16 @@ def bits_required(value):
         bits += 8
     return bits
 
+def current():
+    return {
+        'i386': i386,
+        'amd64': amd64,
+        'arm': arm,
+        'thumb': arm,
+        'aarch64': aarch64,
+        'mips': mips,
+        'powerpc': powerpc
+    }[context.arch]
 
 # def is_register(sz):
 #     try:

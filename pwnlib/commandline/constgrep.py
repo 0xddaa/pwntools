@@ -1,12 +1,15 @@
 #!/usr/bin/env python2
+from __future__ import absolute_import
 
 import argparse
 import os
 import re
 
-from pwn import *
+import pwnlib
+pwnlib.args.free_form = False
 
-from . import common
+from pwn import *
+from pwnlib.commandline import common
 
 p = common.parser_commands.add_parser(
     'constgrep',
@@ -74,6 +77,7 @@ def main(args):
             matcher = re.compile(args.regex, re.IGNORECASE)
         else:
             matcher = re.compile(args.regex)
+
 
         # Evaluate the given constant
         if args.constant:

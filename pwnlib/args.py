@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python2
 """
 Pwntools exposes several magic command-line arguments and environment
@@ -16,8 +17,8 @@ The easiest example is to enable more verbose debugging.  Just set ``DEBUG``.
     $ python exploit.py DEBUG
 
 These arguments are automatically extracted, regardless of their name, and
-exposed via ``pwnlib.args.args``, which is exposed as the global variable
-``args``.  Arguments which ``pwntools`` reserves internally are not exposed
+exposed via :mod:`pwnlib.args.args`, which is exposed as the global variable
+:data:`args`.  Arguments which ``pwntools`` reserves internally are not exposed
 this way.
 
 .. code-block:: bash
@@ -39,18 +40,31 @@ not specified evaluate to an empty string.
 The full list of supported "magic arguments" and their effects are listed
 below.
 """
+from __future__ import absolute_import
+
 import collections
 import logging
 import os
 import string
 import sys
 
-from . import term
-from .context import context
+from pwnlib import term
+from pwnlib.context import context
 
 term_mode  = True
 args       = collections.defaultdict(str)
 env_prefix = 'PWNLIB_'
+free_form  = True
+
+# Check to see if we were invoked as one of the 'pwn xxx' scripts.
+# If so, we don't want to remove e.g. "SYS_" from the end of the command
+# line, as this breaks things like constgrep.
+import pwnlib.commandline
+basename = os.path.basename(sys.argv[0])
+
+if basename == 'pwn' or basename in pwnlib.commandline.__all__:
+    free_form = False
+
 
 def isident(s):
     """
@@ -172,7 +186,7 @@ def initialize():
             sys.argv.remove(orig)
             hooks[arg](value)
 
-        elif isident(arg):
+        elif free_form and isident(arg):
             sys.argv.remove(orig)
             args[arg] = value
 

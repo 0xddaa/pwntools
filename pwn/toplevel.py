@@ -24,15 +24,15 @@ from pwnlib.context import Thread
 from pwnlib.context import context
 from pwnlib.dynelf import DynELF
 from pwnlib.encoders import *
-from pwnlib.elf import Core
-from pwnlib.elf import ELF
-from pwnlib.elf import load
+from pwnlib.elf.corefile import Core, Corefile, Coredump
+from pwnlib.elf.elf import ELF, load
 from pwnlib.encoders import *
 from pwnlib.exception import PwnlibException
+from pwnlib.gdb import attach, debug, debug_assembly, debug_shellcode
 from pwnlib.flag import *
 from pwnlib.fmtstr import FmtStr, fmtstr_payload
 from pwnlib.log import getLogger
-from pwnlib.memleak import MemLeak
+from pwnlib.memleak import MemLeak, RelativeMemLeak
 from pwnlib.regsort import *
 from pwnlib.replacements import *
 from pwnlib.rop import ROP
@@ -40,7 +40,7 @@ from pwnlib.rop.srop import SigreturnFrame
 from pwnlib.runner import *
 from pwnlib.timeout import Timeout
 from pwnlib.tubes.listen import listen
-from pwnlib.tubes.process import process
+from pwnlib.tubes.process import process, PTY, PIPE, STDOUT
 from pwnlib.tubes.remote import remote, tcp, udp, connect
 from pwnlib.tubes.serialtube import serialtube
 from pwnlib.tubes.ssh import ssh

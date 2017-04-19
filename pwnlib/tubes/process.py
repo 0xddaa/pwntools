@@ -1,3 +1,6 @@
+# -*- coding: utf-8 -*-
+from __future__ import absolute_import
+
 import ctypes
 import errno
 import fcntl
@@ -9,36 +12,39 @@ import resource
 import select
 import signal
 import subprocess
+import time
 import tty
 
-from ..context import context
-from ..log import getLogger
-from ..qemu import get_qemu_user
-from ..timeout import Timeout
-from ..util.misc import parse_ldd_output
-from ..util.misc import which
-from .tube import tube
+from pwnlib.context import context
+from pwnlib.log import getLogger
+from pwnlib.qemu import get_qemu_user
+from pwnlib.timeout import Timeout
+from pwnlib.tubes.tube import tube
+from pwnlib.util.misc import parse_ldd_output
+from pwnlib.util.misc import which
 
 log = getLogger(__name__)
 
-PIPE = subprocess.PIPE
-STDOUT = subprocess.STDOUT
-
 class PTY(object): pass
 PTY=PTY()
+STDOUT = subprocess.STDOUT
+PIPE = subprocess.PIPE
+
+signal_names = {-v:k for k,v in signal.__dict__.items() if k.startswith('SIG')}
 
 class process(tube):
     r"""
     Spawns a new process, and wraps it with a tube for communication.
 
     Arguments:
+
         argv(list):
             List of arguments to pass to the spawned process.
         shell(bool):
             Set to `True` to interpret `argv` as a string
             to pass to the shell for interpretation instead of as argv.
         executable(str):
-            Path to the binary to execute.  If ``None``, uses ``argv[0]``.
+            Path to the binary to execute.  If :const:`None`, uses ``argv[0]``.
             Cannot be used with ``shell``.
         cwd(str):
             Working directory.  Uses the current working directory by default.
@@ -47,30 +53,30 @@ class process(tube):
         stdin(int):
             File object or file descriptor number to use for ``stdin``.
             By default, a pipe is used.  A pty can be used instead by setting
-            this to ``process.PTY``.  This will cause programs to behave in an
+            this to ``PTY``.  This will cause programs to behave in an
             interactive manner (e.g.., ``python`` will show a ``>>>`` prompt).
             If the application reads from ``/dev/tty`` directly, use a pty.
         stdout(int):
             File object or file descriptor number to use for ``stdout``.
             By default, a pty is used so that any stdout buffering by libc
             routines is disabled.
-            May also be ``subprocess.PIPE`` to use a normal pipe.
+            May also be ``PIPE`` to use a normal pipe.
         stderr(int):
             File object or file descriptor number to use for ``stderr``.
-            By default, ``stdout`` is used.
-            May also be ``subprocess.PIPE`` to use a separate pipe,
-            although the ``tube`` wrapper will not be able to read this data.
+            By default, ``STDOUT`` is used.
+            May also be ``PIPE`` to use a separate pipe,
+            although the :class:`pwnlib.tubes.tube.tube` wrapper will not be able to read this data.
         close_fds(bool):
             Close all open file descriptors except stdin, stdout, stderr.
-            By default, ``True`` is used.
+            By default, :const:`True` is used.
         preexec_fn(callable):
             Callable to invoke immediately before calling ``execve``.
         raw(bool):
             Set the created pty to raw mode (i.e. disable echo and control
-            characters).  ``True`` by default.  If no pty is created, this
+            characters).  :const:`True` by default.  If no pty is created, this
             has no effect.
         aslr(bool):
-            If set to ``False``, disable ASLR via ``personality`` (``setarch -R``)
+            If set to :const:`False`, disable ASLR via ``personality`` (``setarch -R``)
             and ``setrlimit`` (``ulimit -s unlimited``).
 
             This disables ASLR for the target process.  However, the ``setarch``
@@ -82,15 +88,15 @@ class process(tube):
             Used to control `setuid` status of the target binary, and the
             corresponding actions taken.
 
-            By default, this value is ``None``, so no assumptions are made.
+            By default, this value is :const:`None`, so no assumptions are made.
 
-            If ``True``, treat the target binary as ``setuid``.
+            If :const:`True`, treat the target binary as ``setuid``.
             This modifies the mechanisms used to disable ASLR on the process if
             ``aslr=False``.
             This is useful for debugging locally, when the exploit is a
             ``setuid`` binary.
 
-            If ``False``, prevent ``setuid`` bits from taking effect on the
+            If :const:`False`, prevent ``setuid`` bits from taking effect on the
             target binary.  This is only supported on Linux, with kernels v3.5
             or greater.
         where(str):
@@ -101,6 +107,7 @@ class process(tube):
             Set a SIGALRM alarm timeout on the process.
 
     Attributes:
+
         proc(subprocess)
 
     Examples:
@@ -156,12 +163,11 @@ class process(tube):
         >>> process(stack_smashing).recvall()
         'stack smashing detected'
 
-        >>> PIPE=subprocess.PIPE
         >>> process(stack_smashing, stdout=PIPE).recvall()
         ''
 
         >>> getpass = ['python','-c','import getpass; print getpass.getpass("XXX")']
-        >>> p = process(getpass, stdin=process.PTY)
+        >>> p = process(getpass, stdin=PTY)
         >>> p.recv()
         'XXX'
         >>> p.sendline('hunter2')
@@ -194,10 +200,12 @@ class process(tube):
         >>> p = process(binary.path)
     """
 
+    STDOUT = STDOUT
+    PIPE = PIPE
     PTY = PTY
 
-    #: Have we seen the process stop?
-    _stop_noticed = False
+    #: Have we seen the process stop?  If so, this is a unix timestamp.
+    _stop_noticed = 0
 
     def __init__(self, argv = None,
                  shell = False,
@@ -260,23 +268,30 @@ class process(tube):
         # Create the PTY if necessary
         stdin, stdout, stderr, master, slave = self._handles(*handles)
 
+        #: Arguments passed on argv
+        self.argv = argv
+
         #: Full path to the executable
         self.executable = executable
 
-        #: Arguments passed on argv
-        self.argv = argv
+        if self.executable is None:
+            if shell:
+                self.executable = '/bin/sh'
+            else:
+                self.executable = which(self.argv[0])
 
         #: Environment passed on envp
         self.env = os.environ if env is None else env
 
-        #: Directory the process was created in
-        self.cwd          = cwd or os.path.curdir
+        self._cwd = os.path.realpath(cwd or os.path.curdir)
 
         #: Alarm timeout of the process
         self.alarm        = alarm
 
         self.preexec_fn = preexec_fn
         self.display    = display or self.program
+        self._qemu      = False
+        self._corefile  = None
 
         message = "Starting %s process %r" % (where, self.display)
 
@@ -315,6 +330,8 @@ class process(tube):
                         raise
                     prefixes.append(self.__on_enoexec(exception))
 
+            p.success('pid %i' % self.pid)
+
         if self.pty is not None:
             if stdin is slave:
                 self.proc.stdin = os.fdopen(os.dup(master), 'r+')
@@ -331,6 +348,18 @@ class process(tube):
         fd = self.proc.stdout.fileno()
         fl = fcntl.fcntl(fd, fcntl.F_GETFL)
         fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+        # Save off information about whether the binary is setuid / setgid
+        self.uid = os.getuid()
+        self.gid = os.getgid()
+        self.suid = -1
+        self.sgid = -1
+        st = os.stat(self.executable)
+        if self._setuid:
+            if (st.st_mode & stat.S_ISUID):
+                self.setuid = st.st_uid
+            if (st.st_mode & stat.S_ISGID):
+                self.setgid = st.st_gid
 
     def __preexec_fn(self):
         """
@@ -349,11 +378,14 @@ class process(tube):
                     ctypes.CDLL('libc.so.6').personality(ADDR_NO_RANDOMIZE)
 
                 resource.setrlimit(resource.RLIMIT_STACK, (-1, -1))
-            except:
+            except Exception:
                 self.exception("Could not disable ASLR")
 
         # Assume that the user would prefer to have core dumps.
-        resource.setrlimit(resource.RLIMIT_CORE, (-1, -1))
+        try:
+            resource.setrlimit(resource.RLIMIT_CORE, (-1, -1))
+        except Exception:
+            pass
 
         # Given that we want a core file, assume that we want the whole thing.
         try:
@@ -366,8 +398,17 @@ class process(tube):
             try:
                 PR_SET_NO_NEW_PRIVS = 38
                 ctypes.CDLL('libc.so.6').prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
-            except:
+            except Exception:
                 pass
+
+        # Avoid issues with attaching to processes when yama-ptrace is set
+        try:
+            PR_SET_PTRACER = 0x59616d61
+            PR_SET_PTRACER_ANY = -1
+            ctypes.CDLL('libc.so.6').prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0)
+        except Exception:
+            pass
+
 
         if self.alarm is not None:
             signal.alarm(self.alarm)
@@ -384,7 +425,7 @@ class process(tube):
         # Get the ELF binary for the target executable
         with context.quiet:
             # XXX: Cyclic imports :(
-            from ..elf import ELF
+            from pwnlib.elf import ELF
             binary = ELF(self.executable)
 
         # If we're on macOS, this will never work.  Bail now.
@@ -394,11 +435,15 @@ class process(tube):
         # Determine what architecture the binary is, and find the
         # appropriate qemu binary to run it.
         qemu = get_qemu_user(arch=binary.arch)
+        qemu = which(qemu)
         if qemu:
+            self._qemu = qemu
+
             args = [qemu]
             if self.argv:
                 args += ['-0', self.argv[0]]
             args += ['--']
+
             return [args, qemu]
 
         # If we get here, we couldn't run the binary directly, and
@@ -407,8 +452,42 @@ class process(tube):
 
     @property
     def program(self):
-        """Alias for ``executable``, for backward compatibility"""
+        """Alias for ``executable``, for backward compatibility.
+
+        Example:
+
+            >>> p = process('true')
+            >>> p.executable == '/bin/true'
+            True
+            >>> p.executable == p.program
+            True
+
+        """
         return self.executable
+
+    @property
+    def cwd(self):
+        """Directory that the process is working in.
+
+        Example:
+
+            >>> p = process('sh')
+            >>> p.sendline('cd /tmp; echo AAA')
+            >>> _ = p.recvuntil('AAA')
+            >>> p.cwd == '/tmp'
+            True
+            >>> p.sendline('cd /proc; echo BBB;')
+            >>> _ = p.recvuntil('BBB')
+            >>> p.cwd
+            '/proc'
+        """
+        try:
+            self._cwd = os.readlink('/proc/%i/cwd' % self.pid)
+        except Exception:
+            pass
+
+        return self._cwd
+
 
     def _validate(self, cwd, executable, argv, env):
         """
@@ -465,7 +544,9 @@ class process(tube):
         # Either there is a path component, or the binary is not in $PATH
         # For example, 'foo/bar' or 'bar' with cwd=='foo'
         elif os.path.sep not in executable:
+            tmp = executable
             executable = os.path.join(cwd, executable)
+            log.warn_once("Could not find executable %r in $PATH, using %r instead" % (tmp, executable))
 
         if not os.path.exists(executable):
             self.error("%r does not exist"  % executable)
@@ -502,7 +583,7 @@ class process(tube):
         master = slave = None
 
         if self.pty is not None:
-            # Normally we could just use subprocess.PIPE and be happy.
+            # Normally we could just use PIPE and be happy.
             # Unfortunately, this results in undesired behavior when
             # printf() and similar functions buffer data instead of
             # sending it directly.
@@ -542,7 +623,6 @@ class process(tube):
 
         Kills the process.
         """
-
         self.close()
 
     def poll(self, block = False):
@@ -554,15 +634,28 @@ class process(tube):
         Poll the exit code of the process. Will return None, if the
         process has not yet finished and the exit code otherwise.
         """
+
+        # In order to facilitate retrieving core files, force an update
+        # to the current working directory
+        _ = self.cwd
+
         if block:
             self.wait_for_close()
 
         self.proc.poll()
-        if self.proc.returncode != None and not self._stop_noticed:
-            self._stop_noticed = True
-            self.info("Process %r stopped with exit code %d" % (self.display, self.proc.returncode))
+        returncode = self.proc.returncode
 
-        return self.proc.returncode
+        if returncode != None and not self._stop_noticed:
+            self._stop_noticed = time.time()
+            signame = ''
+            if returncode < 0:
+                signame = ' (%s)' % (signal_names.get(returncode, 'SIG???'))
+
+            self.info("Process %r stopped with exit code %d%s (pid %i)" % (self.display,
+                                                                  returncode,
+                                                                  signame,
+                                                                  self.pid))
+        return returncode
 
     def communicate(self, stdin = None):
         """communicate(stdin = None) -> str
@@ -662,15 +755,15 @@ class process(tube):
             try:
                 self.proc.kill()
                 self.proc.wait()
-                self._stop_noticed = True
-                self.info('Stopped program %r' % self.program)
+                self._stop_noticed = time.time()
+                self.info('Stopped process %r (pid %i)' % (self.program, self.pid))
             except OSError:
                 pass
 
 
     def fileno(self):
         if not self.connected():
-            self.error("A stopped program does not have a file number")
+            self.error("A stopped process does not have a file number")
 
         return self.proc.stdout.fileno()
 
@@ -777,7 +870,7 @@ class process(tube):
         If possible, it is adjusted to the correct address
         automatically.
         """
-        from ..elf import ELF
+        from pwnlib.elf import ELF
 
         for lib, address in self.libs().items():
             if 'libc.so' in lib:
@@ -786,19 +879,66 @@ class process(tube):
                 return e
 
     @property
-    def corefile(self):
-        filename = 'core.%i' % (self.pid)
-        process(['gcore', '-o', 'core', str(self.pid)]).wait()
+    def elf(self):
+        """elf() -> pwnlib.elf.elf.ELF
 
+        Returns an ELF file for the executable that launched the process.
+        """
+        import pwnlib.elf.elf
+        return pwnlib.elf.elf.ELF(self.executable)
+
+    @property
+    def corefile(self):
+        """corefile() -> pwnlib.elf.elf.Core
+
+        Returns a corefile for the process.
+
+        If the process is alive, attempts to create a coredump with GDB.
+
+        If the process is dead, attempts to locate the coredump created
+        by the kernel.
+        """
+        if self._corefile is not None:
+            return self._corefile
+
+        # If the process is still alive, try using GDB
         import pwnlib.elf.corefile
-        return pwnlib.elf.corefile.Core(filename)
+        import pwnlib.gdb
+
+        if self.poll() is None:
+            return pwnlib.gdb.corefile(self)
+
+        finder = pwnlib.elf.corefile.CorefileFinder(self)
+        if not finder.core_path:
+            self.warn("Could not find core file for pid %i" % self.pid)
+            return
+
+        self._corefile = pwnlib.elf.corefile.Corefile(finder.core_path)
+        return self._corefile
 
     def leak(self, address, count=1):
-        """Leaks memory within the process at the specified address.
+        r"""Leaks memory within the process at the specified address.
 
         Arguments:
             address(int): Address to leak memory at
             count(int): Number of bytes to leak at that address.
+
+        Example:
+
+            >>> e = ELF('/bin/sh')
+            >>> p = process(e.path)
+
+            In order to make sure there's not a race condition against
+            the process getting set up...
+
+            >>> p.sendline('echo hello')
+            >>> p.recvuntil('hello')
+            'hello'
+
+            Now we can leak some data!
+
+            >>> p.leak(e.address, 4)
+            '\x7fELF'
         """
         # If it's running under qemu-user, don't leak anything.
         if 'qemu-' in os.path.realpath('/proc/%i/exe' % self.pid):
