@@ -9,9 +9,12 @@ The table below shows which release corresponds to each branch, and what date th
 
 | Version          | Branch   | Release Date           |
 | ---------------- | -------- | ---------------------- |
-| [3.7.0](#350)    | `dev`    | Jun 17, 2017 (planned)
-| [3.6.0](#350)    | `beta`   | May 6, 2017 (planned)
-| [3.5.1](#351)    | `stable` | Apr 15, 2017
+| [3.9.0](#390)    | `dev`    | Sep 8, 2017 (planned)
+| [3.8.0](#380)    | `beta`   | Jul 28, 2017 (planned)
+| [3.7.0](#370)    | `stable` | Jun 19, 2017
+| [3.6.1](#361)    |          | May 12, 2017
+| [3.6.0](#360)    |          | May 8, 2017
+| [3.5.1](#351)    |          | Apr 15, 2017
 | [3.5.0](#350)    |          | Mar 26, 2017
 | [3.4.1](#341)    |          | Feb 17, 2017
 | [3.4.0](#340)    |          | Feb 13, 2017
@@ -31,13 +34,41 @@ The table below shows which release corresponds to each branch, and what date th
 | [3.0.0](#300)    |          | Aug 20, 2016
 | [2.2.0](#220)    |          | Jan 5, 2015
 
+## 3.9.0
+
+To be released on Sep 8, 2017.
+
+## 3.8.0
+
+To be released on Jul 28, 2017.
+
+- [#981][981] Fixed RELRO detection logic
+- [#986][986] Enhancements to DynELF for controlling usage of LibcDB
+
+[981]: https://github.com/Gallopsled/pwntools/issues/981
+[986]: https://github.com/Gallopsled/pwntools/issues/986
+
 ## 3.7.0
 
-To be on Jun 17, 2017.
+- [#933][933] DynELF works better with different base addresses
+- [#952][952] A few small fixes were made to `pwn template`, and the CRC database was updated.
+- [5c72d62c][5c72d62c] Updated the CRC database
+
+[933]: https://github.com/Gallopsled/pwntools/issues/933
+[952]: https://github.com/Gallopsled/pwntools/issues/952
+[5c72d62c]: https://github.com/Gallopsled/pwntools/commit/5c72d62c
+
+## 3.6.1
+
+- [#979][979]+[1a4a1e1][1a4a1e1] Fixed [#974][974], a bug related to the terminal handling and numlock.
+- [#980][980] Fixed the `pwn template` command.
+
+[974]: https://github.com/Gallopsled/pwntools/issues/974
+[979]: https://github.com/Gallopsled/pwntools/pull/979
+[980]: https://github.com/Gallopsled/pwntools/pull/980
+[1a4a1e1]: https://github.com/Gallopsled/pwntools/commit/1a4a1e1
 
 ## 3.6.0
-
-To be released on May 6, 2017.
 
 - [#895][895] Added a Dockerfile to simplify testing setup and allow testing on OSX
 - [#897][897] Fixed some incorrect AArch64 syscals
@@ -51,6 +82,18 @@ To be released on May 6, 2017.
     + More information is available in the documentation [here](http://docs.pwntools.com/en/dev/commandline.html#pwn-debug)
 - [#919][919] Added a `pwn template` command-line utility to simplify the process of bootstrapping a new exploit.
     + More information is available in the documentation [here](http://docs.pwntools.com/en/dev/commandline.html#pwn-template).
+- [#948][948] Fix unnecessary warning for Core files
+- [#954][954] Fix list processing in `~/.pwn.conf`
+- [#967][967] Respect `TERM_PROGRAM` for `run_in_new_terminal`
+- [#970][970] Fix overly-aggressive corefile caching
+
+[947]: https://github.com/Gallopsled/pwntools/pull/947
+[948]: https://github.com/Gallopsled/pwntools/pull/948
+[954]: https://github.com/Gallopsled/pwntools/pull/954
+[960]: https://github.com/Gallopsled/pwntools/pull/960
+[967]: https://github.com/Gallopsled/pwntools/pull/967
+[968]: https://github.com/Gallopsled/pwntools/pull/968
+[970]: https://github.com/Gallopsled/pwntools/pull/970
 
 [895]: https://github.com/Gallopsled/pwntools/pull/895
 [897]: https://github.com/Gallopsled/pwntools/pull/897

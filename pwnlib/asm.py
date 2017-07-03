@@ -146,8 +146,9 @@ def which_binutils(util):
     Examples:
 
         >>> import platform
+        >>> which_binutils = pwnlib.asm.which_binutils
         >>> which_binutils('as', arch=platform.machine())
-        '.../bin/as'
+        '.../bin/...as'
         >>> which_binutils('as', arch='arm') #doctest: +ELLIPSIS
         '.../bin/arm-...-as'
         >>> which_binutils('as', arch='powerpc') #doctest: +ELLIPSIS
@@ -783,7 +784,7 @@ def disasm(data, vma = 0, byte = True, offset = True, instructions = True):
 
         res = _run(objcopy + [step1, step2])
 
-        output0 = subprocess.check_output(objdump + [step2])
+        output0 = _run(objdump + [step2])
         output1 = output0.split('<.text>:\n')
 
         if len(output1) != 2:

@@ -51,6 +51,7 @@ from elftools.elf.constants import P_FLAGS
 from elftools.elf.constants import SHN_INDICES
 from elftools.elf.descriptions import describe_e_type
 from elftools.elf.elffile import ELFFile
+from elftools.elf.enums import ENUM_P_TYPE
 from elftools.elf.gnuversions import GNUVerDefSection
 from elftools.elf.relocation import RelocationSection
 from elftools.elf.sections import SymbolTableSection
@@ -63,13 +64,14 @@ from pwnlib.context import LocalContext
 from pwnlib.context import context
 from pwnlib.elf.config import kernel_configuration
 from pwnlib.elf.config import parse_kconfig
+from pwnlib.elf.plt import emulate_plt_instructions
 from pwnlib.log import getLogger
 from pwnlib.qemu import get_qemu_arch
 from pwnlib.term import text
 from pwnlib.tubes.process import process
 from pwnlib.util import misc
 from pwnlib.util import packing
-from pwnlib.util import sh_string
+from pwnlib.util.sh_string import sh_string
 
 log = getLogger(__name__)
 
@@ -122,6 +124,8 @@ class dotdict(dict):
     Is a real :class:`dict` object, but also serves up keys as attributes
     when reading attributes.
 
+    Supports recursive instantiation for keys which contain dots.
+
     Example:
 
         >>> x = pwnlib.elf.elf.dotdict()
@@ -130,9 +134,22 @@ class dotdict(dict):
         >>> x['foo'] = 3
         >>> x.foo
         3
+        >>> x['bar.baz'] = 4
+        >>> x.bar.baz
+        4
     """
     def __getattr__(self, name):
-        return self[name]
+        if name in self:
+            return self[name]
+
+        name_dot = name + '.'
+        name_len = len(name_dot)
+        subkeys = {k[name_len:]: self[k] for k in self if k.startswith(name_dot)}
+
+        if subkeys:
+            return dotdict(subkeys)
+
+        return getattr(super(dotdict, self), name)
 
 class ELF(ELFFile):
     """Encapsulates information about an ELF file.
@@ -169,7 +186,7 @@ class ELF(ELFFile):
     _fill_gaps = True
 
 
-    def __init__(self, path):
+    def __init__(self, path, checksec=True):
         # elftools uses the backing file for all reads and writes
         # in order to permit writing without being able to write to disk,
         # mmap() the file.
@@ -231,16 +248,20 @@ class ELF(ELFFile):
         self.bytes = self.bits / 8
 
         if self.arch == 'mips':
-            if self.header['e_flags'] & E_FLAGS.EF_MIPS_ARCH_64 \
-            or self.header['e_flags'] & E_FLAGS.EF_MIPS_ARCH_64R2:
+            mask = lambda a, b: a & b == b
+            flags = self.header['e_flags']
+
+            if mask(flags, E_FLAGS.EF_MIPS_ARCH_32) \
+            or mask(flags, E_FLAGS.EF_MIPS_ARCH_32R2):
+                pass
+            elif mask(flags, E_FLAGS.EF_MIPS_ARCH_64) \
+            or mask(flags, E_FLAGS.EF_MIPS_ARCH_64R2):
                 self.arch = 'mips64'
                 self.bits = 64
 
         self._address = 0
         if self.elftype != 'DYN':
-            for seg in self.segments:
-                if seg.header.p_type != 'PT_LOAD':
-                    continue
+            for seg in self.iter_segments_by_type('PT_LOAD'):
                 addr = seg.header.p_vaddr
                 if addr == 0:
                     continue
@@ -268,13 +289,41 @@ class ELF(ELFFile):
             if config:
                 self.config = parse_kconfig(config)
 
-        self._populate_got_plt()
-        self._populate_symbols()
+        #: ``True`` if the ELF is a statically linked executable
+        self.statically_linked = bool(self.elftype == 'EXEC' and self.load_addr)
+
+        #: ``True`` if the ELF is an executable
+        self.executable = bool(self.elftype == 'EXEC')
+
+        for seg in self.iter_segments_by_type('PT_INTERP'):
+            self.executable = True
+            self.statically_linked = False
+
+        #: ``True`` if the ELF is a shared library
+        self.library = not self.executable and self.elftype == 'DYN'
+
+        try:
+            self._populate_symbols()
+        except Exception as e:
+            log.warn("Could not populate symbols: %s", e)
+
+        try:
+            self._populate_got()
+        except Exception as e:
+            log.warn("Could not populate GOT: %s", e)
+
+        try:
+            self._populate_plt()
+        except Exception as e:
+            log.warn("Could not populate PLT: %s", e)
+
+        self._populate_synthetic_symbols()
         self._populate_libraries()
         self._populate_functions()
         self._populate_kernel_version()
 
-        self._describe()
+        if checksec:
+            self._describe()
 
     @staticmethod
     @LocalContext
@@ -400,6 +449,15 @@ class ELF(ELFFile):
             for the segments in the ELF.
         """
         return list(self.iter_segments())
+
+    def iter_segments_by_type(self, t):
+        """
+        Yields:
+            Segments matching the specified type.
+        """
+        for seg in self.iter_segments():
+            if t == seg.header.p_type or t in str(seg.header.p_type):
+                yield seg
 
     @property
     def sections(self):
@@ -551,7 +609,7 @@ class ELF(ELFFile):
             return
 
         try:
-            cmd = sh_string.sh_command_with('ulimit -s unlimited; LD_TRACE_LOADED_OBJECTS=1 LD_WARN=1 LD_BIND_NOW=1 %s 2>/dev/null', self.path)
+            cmd = 'ulimit -s unlimited; LD_TRACE_LOADED_OBJECTS=1 LD_WARN=1 LD_BIND_NOW=1 %s 2>/dev/null' % sh_string(self.path)
 
             data = subprocess.check_output(cmd, shell = True, stderr = subprocess.STDOUT)
             libs = misc.parse_ldd_output(data)
@@ -598,15 +656,11 @@ class ELF(ELFFile):
     def _populate_symbols(self):
         """
         >>> bash = ELF(which('bash'))
-        >>> bash.symbols['_start'] == bash.header.e_entry
+        >>> bash.symbols['_start'] == bash.entry
         True
         """
-        # By default, have 'symbols' include everything in the PLT.
-        #
-        # This way, elf.symbols['write'] will be a valid address to call
-        # for write().
-        self.symbols.update(self.plt)
 
+        # Populate all of the "normal" symbols from the symbol tables
         for section in self.sections:
             if not isinstance(section, SymbolTableSection):
                 continue
@@ -617,90 +671,162 @@ class ELF(ELFFile):
                     continue
                 self.symbols[symbol.name] = value
 
-        # Add 'plt.foo' and 'got.foo' to the symbols for entries
-        self.symbols.update({'plt.%s' % sym: addr for sym, addr in self.plt.items()})
-        self.symbols.update({'got.%s' % sym: addr for sym, addr in self.got.items()})
+    def _populate_synthetic_symbols(self):
+        """Adds symbols from the GOT and PLT to the symbols dictionary.
 
-    def _populate_got_plt(self):
-        """Loads the GOT and the PLT symbols and addresses.
+        Does not overwrite any existing symbols, and prefers PLT symbols.
 
-        The following doctest checks the valitidy of the addresses.
-        This assumes that each GOT entry points to its PLT entry,
-        usually +6 bytes but could be anywhere within 0-16 bytes.
+        Synthetic plt.xxx and got.xxx symbols are added for each PLT and
+        GOT entry, respectively.
 
-        >>> from pwnlib.util.packing import unpack
-        >>> bash = ELF(which('bash'))
-        >>> def validate_got_plt(sym):
-        ...     got      = bash.got[sym]
-        ...     plt      = bash.plt[sym]
-        ...     got_addr = unpack(bash.read(got, bash.bytes), bash.bits)
-        ...     return got_addr in range(plt,plt+0x10)
-        ...
-        >>> all(map(validate_got_plt, bash.got.keys()))
-        True
+        Example:bash.
+
+            >>> bash = ELF(which('bash'))
+            >>> bash.symbols.wcscmp == bash.plt.wcscmp
+            True
+            >>> bash.symbols.wcscmp == bash.symbols.plt.wcscmp
+            True
+            >>> bash.symbols.stdin  == bash.got.stdin
+            True
+            >>> bash.symbols.stdin  == bash.symbols.got.stdin
+            True
         """
-        plt = self.get_section_by_name('.plt')
-        got = self.get_section_by_name('.got')
+        for symbol, address in self.plt.items():
+            self.symbols.setdefault(symbol, address)
+            self.symbols['plt.' + symbol] = address
 
-        if not plt:
+        for symbol, address in self.got.items():
+            self.symbols.setdefault(symbol, address)
+            self.symbols['got.' + symbol] = address
+
+    def _populate_got(self):
+        """Loads the symbols for all relocations"""
+        # Statically linked implies no relocations, since there is no linker
+        # Could always be self-relocating like Android's linker *shrug*
+        if self.statically_linked:
             return
 
-        # Find the relocation section for PLT
-        try:
-            rel_plt = next(s for s in self.sections if
-                            s.header.sh_info == self.sections.index(plt) and
-                            isinstance(s, RelocationSection))
-        except StopIteration:
-            # Evidently whatever android-ndk uses to build binaries zeroed out sh_info for rel.plt
-            rel_plt = self.get_section_by_name('.rel.plt') or self.get_section_by_name('.rela.plt')
+        for section in self.iter_sections():
+            # We are only interested in relocations
+            if not isinstance(section, RelocationSection):
+                continue
 
-        if not rel_plt:
-            log.warning("Couldn't find relocations against PLT to get symbols")
-            return
+            # Only get relocations which link to another section (for symbols)
+            if section.header.sh_link == SHN_INDICES.SHN_UNDEF:
+                continue
 
-        if rel_plt.header.sh_link != SHN_INDICES.SHN_UNDEF:
-            # Find the symbols for the relocation section
-            sym_rel_plt = self.sections[rel_plt.header.sh_link]
+            symbols = self.get_section(section.header.sh_link)
 
-            # Populate the GOT
-            for rel in rel_plt.iter_relocations():
+            for rel in section.iter_relocations():
                 sym_idx  = rel.entry.r_info_sym
-                symbol   = sym_rel_plt.get_symbol(sym_idx)
-                name     = symbol.name
 
-                self.got[name] = rel.entry.r_offset
+                if not sym_idx:
+                    continue
 
-        # Depending on the architecture, the beginning of the .plt will differ
-        # in size, and each entry in the .plt will also differ in size.
-        offset     = None
-        multiplier = None
+                symbol = symbols.get_symbol(sym_idx)
 
-        # Map architecture: offset, multiplier
-        header_size, entry_size = {
-            'i386':   (0x10, 0x10),
-            'amd64': (0x10, 0x10),
-            'arm':   (0x14, 0xC),
-            'aarch64': (0x20, 0x20),
-        }.get(self.arch, (0,0))
+                if symbol and symbol.name:
+                    self.got[symbol.name] = rel.entry.r_offset
 
-        address = plt.header.sh_addr + header_size
+        if self.arch == 'mips':
+            try:
+                self._populate_mips_got()
+            except Exception as e:
+                log.warn("Could not populate MIPS GOT: %s", e)
 
-        # Based on the ordering of the GOT symbols, populate the PLT
-        for i,(addr,name) in enumerate(sorted((addr,name) for name, addr in self.got.items())):
-            self.plt[name] = address
+        if not self.got:
+            log.warn("Did not find any GOT entries")
 
-            # Some PLT entries in ARM binaries have a thumb-mode stub that looks like:
-            #
-            # 00008304 <__gmon_start__@plt>:
-            #     8304:   4778        bx  pc
-            #     8306:   46c0        nop         ; (mov r8, r8)
-            #     8308:   e28fc600    add ip, pc, #0, 12
-            #     830c:   e28cca08    add ip, ip, #8, 20  ; 0x8000
-            #     8310:   e5bcf228    ldr pc, [ip, #552]! ; 0x228
-            if self.arch in ('arm', 'thumb') and self.u16(address) == 0x4778:
-                address += 4
+    def _populate_mips_got(self):
+        self._mips_got = {}
+        strings = self.get_section(self.header.e_shstrndx)
 
-            address += entry_size
+        ELF_MIPS_GNU_GOT1_MASK = 0x80000000
+
+        if self.bits == 64:
+            ELF_MIPS_GNU_GOT1_MASK <<= 32
+
+        # Beginning of the GOT
+        got = self.dynamic_value_by_tag('DT_PLTGOT') or 0
+
+        # Find the beginning of the GOT pointers
+        got1_mask = (self.unpack(got) & ELF_MIPS_GNU_GOT1_MASK)
+        i = 2 if got1_mask else 1
+        self._mips_skip = i
+
+        # We don't care about local GOT entries, skip them
+        local_gotno = self.dynamic_value_by_tag('DT_MIPS_LOCAL_GOTNO')
+        got += local_gotno * context.bytes
+
+        # Iterate over the dynamic symbol table
+        dynsym = self.get_section_by_name('.dynsym')
+        symbol_iter = dynsym.iter_symbols()
+
+        # 'gotsym' is the index of the first GOT symbol
+        gotsym = self.dynamic_value_by_tag('DT_MIPS_GOTSYM')
+        for i in range(gotsym):
+            symbol_iter.next()
+
+        # 'symtabno' is the total number of symbols
+        symtabno = self.dynamic_value_by_tag('DT_MIPS_SYMTABNO')
+
+        for i in range(symtabno - gotsym):
+            symbol = symbol_iter.next()
+            self._mips_got[i + gotsym] = got
+            self.got[symbol.name] = got
+            got += self.bytes
+
+    def _populate_plt(self):
+        """Loads the PLT symbols
+
+        >>> path = pwnlib.data.elf.path
+        >>> for test in glob(os.path.join(path, 'test-*')):
+        ...     test = ELF(test)
+        ...     assert '__stack_chk_fail' in test.got, test
+        ...     if test.arch != 'ppc':
+        ...         assert '__stack_chk_fail' in test.plt, test
+        """
+        if self.statically_linked:
+            log.debug("%r is statically linked, skipping GOT/PLT symbols" % self.path)
+            return
+
+        if not self.got:
+            log.debug("%r doesn't have any GOT symbols, skipping PLT" % self.path)
+            return
+
+        # This element holds an address associated with the procedure linkage table
+        # and/or the global offset table.
+        #
+        # Zach's note: This corresponds to the ".got.plt" section, in a PIE non-RELRO binary.
+        #              This corresponds to the ".got" section, in a PIE full-RELRO binary.
+        #              In particular, this is where EBX points when it points into the GOT.
+        dt_pltgot = self.dynamic_value_by_tag('DT_PLTGOT') or 0
+
+        # There are two PLTs we may need to search
+        plt = self.get_section_by_name('.plt')          # <-- Functions only
+        plt_got = self.get_section_by_name('.plt.got')  # <-- Functions used as data
+        plt_mips = self.get_section_by_name('.MIPS.stubs')
+
+        # Invert the GOT symbols we already have, so we can look up by address
+        inv_symbols = {v:k for k,v in self.got.items()}
+        inv_symbols.update({v:k for k,v in self.symbols.items()})
+
+        with context.local(arch=self.arch, bits=self.bits, endian=self.endian):
+            for section in (plt, plt_got, plt_mips):
+                if not section:
+                    continue
+
+                res = emulate_plt_instructions(self,
+                                                dt_pltgot,
+                                                section.header.sh_addr,
+                                                section.data(),
+                                                inv_symbols)
+
+                for address, target in reversed(sorted(res.items())):
+                    self.plt[inv_symbols[target]] = address
+
+        for a,n in sorted({v:k for k,v in self.plt.items()}.items()):
+            log.debug('PLT %#x %s', a, n)
 
     def _populate_kernel_version(self):
         if 'linux_banner' not in self.symbols:
@@ -1069,7 +1195,8 @@ class ELF(ELFFile):
         if self.arch == 'arm' and address & 1:
             arch = 'thumb'
             address -= 1
-        return disasm(self.read(address, n_bytes), vma=address, arch=arch)
+
+        return disasm(self.read(address, n_bytes), vma=address, arch=arch, endian=self.endian)
 
     def asm(self, address, assembly):
         """asm(address, assembly)
@@ -1118,6 +1245,18 @@ class ELF(ELFFile):
 
         return dt
 
+    def dynamic_value_by_tag(self, tag):
+        """dynamic_value_by_tag(tag) -> int
+
+        Retrieve the value from a dynamic tag a la ``DT_XXX``.
+
+        If the tag is missing, returns ``None``.
+        """
+        tag = self.dynamic_by_tag(tag)
+
+        if tag:
+            return tag.entry.d_val
+
     def dynamic_string(self, offset):
         """dynamic_string(offset) -> bytes
 
@@ -1142,35 +1281,168 @@ class ELF(ELFFile):
         return string.rstrip('\x00')
 
 
+
     @property
     def relro(self):
-        """:class:`bool`: Whether the current binary uses RELRO protections."""
+        """:class:`bool`: Whether the current binary uses RELRO protections.
+
+        This requires both presence of the dynamic tag ``DT_BIND_NOW``, and
+        a ``GNU_RELRO`` program header.
+
+        The `ELF Specification`_ describes how the linker should resolve
+        symbols immediately, as soon as a binary is loaded.  This can be
+        emulated with the ``LD_BIND_NOW=1`` environment variable.
+
+            ``DT_BIND_NOW``
+
+            If present in a shared object or executable, this entry instructs
+            the dynamic linker to process all relocations for the object
+            containing this entry before transferring control to the program.
+            The presence of this entry takes precedence over a directive to use
+            lazy binding for this object when specified through the environment
+            or via ``dlopen(BA_LIB)``.
+
+            (`page 81`_)
+
+        Separately, an extension to the GNU linker allows a binary to specify
+        a PT_GNU_RELRO_ program header, which describes the *region of memory
+        which is to be made read-only after relocations are complete.*
+
+        Finally, a new-ish extension which doesn't seem to have a canonical
+        source of documentation is DF_BIND_NOW_, which has supposedly superceded
+        ``DT_BIND_NOW``.
+
+            ``DF_BIND_NOW``
+
+            If set in a shared object or executable, this flag instructs the
+            dynamic linker to process all relocations for the object containing
+            this entry before transferring control to the program. The presence
+            of this entry takes precedence over a directive to use lazy binding
+            for this object when specified through the environment or via
+            ``dlopen(BA_LIB)``.
+
+        .. _ELF Specification: https://refspecs.linuxbase.org/elf/elf.pdf
+        .. _page 81: https://refspecs.linuxbase.org/elf/elf.pdf#page=81
+        .. _DT_BIND_NOW: https://refspecs.linuxbase.org/elf/elf.pdf#page=81
+        .. _PT_GNU_RELRO: https://refspecs.linuxbase.org/LSB_3.1.1/LSB-Core-generic/LSB-Core-generic.html#PROGHEADER
+        .. _DF_BIND_NOW: http://refspecs.linuxbase.org/elf/gabi4+/ch5.dynamic.html#df_bind_now
+
+        """
         if self.dynamic_by_tag('DT_BIND_NOW'):
             return "Full"
 
         if any('GNU_RELRO' in str(s.header.p_type) for s in self.segments):
             return "Partial"
+
         return None
 
     @property
     def nx(self):
-        """:class:`bool`: Whether the current binary uses NX protections."""
-        if not any('GNU_STACK' in str(seg.header.p_type) for seg in self.segments):
-            return False
+        """:class:`bool`: Whether the current binary uses NX protections.
 
-        # Can't call self.executable_segments because of dependency loop.
-        exec_seg = [s for s in self.segments if s.header.p_flags & P_FLAGS.PF_X]
-        return not any('GNU_STACK' in str(seg.header.p_type) for seg in exec_seg)
+        Specifically, we are checking for ``READ_IMPLIES_EXEC`` being set
+        by the kernel, as a result of honoring ``PT_GNU_STACK`` in the kernel.
+
+        The **Linux kernel** directly honors ``PT_GNU_STACK`` to `mark the
+        stack as executable.`__
+
+        .. __: https://github.com/torvalds/linux/blob/v4.9/fs/binfmt_elf.c#L784-L789
+
+        .. code-block:: c
+
+            case PT_GNU_STACK:
+                if (elf_ppnt->p_flags & PF_X)
+                    executable_stack = EXSTACK_ENABLE_X;
+                else
+                    executable_stack = EXSTACK_DISABLE_X;
+                break;
+
+        Additionally, it then sets ``read_implies_exec``, so that `all readable pages
+        are executable`__.
+
+        .. __: https://github.com/torvalds/linux/blob/v4.9/fs/binfmt_elf.c#L849-L850
+
+        .. code-block:: c
+
+            if (elf_read_implies_exec(loc->elf_ex, executable_stack))
+                current->personality |= READ_IMPLIES_EXEC;
+        """
+        if not self.executable:
+            return True
+
+        for seg in self.iter_segments_by_type('GNU_STACK'):
+            return not bool(seg.header.p_flags & P_FLAGS.PF_X)
+
+        # If you NULL out the PT_GNU_STACK section via ELF.disable_nx(),
+        # everything is executable.
+        return False
 
     @property
     def execstack(self):
-        """:class:`bool`: Whether the current binary uses an executable stack."""
-        return not self.nx
+        """:class:`bool`: Whether the current binary uses an executable stack.
+
+        This is based on the presence of a program header PT_GNU_STACK_
+        being present, and its setting.
+
+            ``PT_GNU_STACK``
+
+            The p_flags member specifies the permissions on the segment
+            containing the stack and is used to indicate wether the stack
+            should be executable. The absense of this header indicates
+            that the stack will be executable.
+
+        In particular, if the header is missing the stack is executable.
+        If the header is present, it may **explicitly** mark that the stack is
+        executable.
+
+        This is only somewhat accurate.  When using the GNU Linker, it usees
+        DEFAULT_STACK_PERMS_ to decide whether a lack of ``PT_GNU_STACK``
+        should mark the stack as executable:
+
+        .. code-block:: c
+
+            /* On most platforms presume that PT_GNU_STACK is absent and the stack is
+             * executable.  Other platforms default to a nonexecutable stack and don't
+             * need PT_GNU_STACK to do so.  */
+            uint_fast16_t stack_flags = DEFAULT_STACK_PERMS;
+
+        By searching the source for ``DEFAULT_STACK_PERMS``, we can see which
+        architectures have which settings.
+
+        ::
+
+            $ git grep '#define DEFAULT_STACK_PERMS' | grep -v PF_X
+            sysdeps/aarch64/stackinfo.h:31:#define DEFAULT_STACK_PERMS (PF_R|PF_W)
+            sysdeps/nios2/stackinfo.h:31:#define DEFAULT_STACK_PERMS (PF_R|PF_W)
+            sysdeps/tile/stackinfo.h:31:#define DEFAULT_STACK_PERMS (PF_R|PF_W)
+
+        .. _PT_GNU_STACK: https://refspecs.linuxbase.org/LSB_3.0.0/LSB-PDA/LSB-PDA/progheader.html
+        .. _DEFAULT_STACK_PERMS: https://github.com/bminor/glibc/blob/glibc-2.25/elf/dl-load.c#L1036-L1038
+        """
+        # Dynamic objects do not have the ability to change the executable state of the stack.
+        if not self.executable:
+            return False
+
+        # If NX is completely off for the process, the stack is executable.
+        if not self.nx:
+            return True
+
+        # If the ``PT_GNU_STACK`` program header is missing, then use the
+        # default rules.  Only AArch64 gets a non-executable stack by default.
+        for _ in self.iter_segments_by_type('GNU_STACK'):
+            break
+        else:
+            return self.arch != 'aarch64'
+
+        return False
 
     @property
     def canary(self):
         """:class:`bool`: Whether the current binary uses stack canaries."""
-        return '__stack_chk_fail' in self.symbols
+
+        # Sometimes there is no function for __stack_chk_fail,
+        # but there is an entry in the GOT
+        return '__stack_chk_fail' in (set(self.symbols) | set(self.got))
 
     @property
     def packed(self):
@@ -1240,17 +1512,18 @@ class ELF(ELFFile):
             "PIE:".ljust(10) + {
                 True: green("PIE enabled"),
                 False: red("No PIE (%#x)" % self.address)
-            }[self.pie]
+            }[self.pie],
         ])
 
+        # Execstack may be a thing, even with NX enabled, because of glibc
+        if self.execstack and self.nx:
+            res.append("Stack:".ljust(10) + red("Executable"))
 
         # Are there any RWX areas in the binary?
         #
         # This will occur if NX is disabled and *any* area is
         # RW, or can expressly occur.
-        rwx = self.rwx_segments
-
-        if self.nx and rwx:
+        if self.rwx_segments or (not self.nx and self.writable_segments):
             res += [ "RWX:".ljust(10) + red("Has RWX segments") ]
 
         if self.rpath:
@@ -1331,45 +1604,59 @@ class ELF(ELFFile):
         Undefined Behavior Sanitizer (``UBSAN``)."""
         return any(s.startswith('__ubsan_') for s in self.symbols)
 
+    def _update_args(self, kw):
+        kw.setdefault('arch', self.arch)
+        kw.setdefault('bits', self.bits)
+        kw.setdefault('endian', self.endian)
 
     def p64(self,  address, data, *a, **kw):
         """Writes a 64-bit integer ``data`` to the specified ``address``"""
+        self._update_args(kw)
         return self.write(address, packing.p64(data, *a, **kw))
 
     def p32(self,  address, data, *a, **kw):
         """Writes a 32-bit integer ``data`` to the specified ``address``"""
+        self._update_args(kw)
         return self.write(address, packing.p32(data, *a, **kw))
 
     def p16(self,  address, data, *a, **kw):
         """Writes a 16-bit integer ``data`` to the specified ``address``"""
+        self._update_args(kw)
         return self.write(address, packing.p16(data, *a, **kw))
 
     def p8(self,   address, data, *a, **kw):
         """Writes a 8-bit integer ``data`` to the specified ``address``"""
+        self._update_args(kw)
         return self.write(address, packing.p8(data, *a, **kw))
 
     def pack(self, address, data, *a, **kw):
         """Writes a packed integer ``data`` to the specified ``address``"""
+        self._update_args(kw)
         return self.write(address, packing.pack(data, *a, **kw))
 
     def u64(self,    address, *a, **kw):
         """Unpacks an integer from the specified ``address``."""
+        self._update_args(kw)
         return packing.u64(self.read(address, 8), *a, **kw)
 
     def u32(self,    address, *a, **kw):
         """Unpacks an integer from the specified ``address``."""
+        self._update_args(kw)
         return packing.u32(self.read(address, 4), *a, **kw)
 
     def u16(self,    address, *a, **kw):
         """Unpacks an integer from the specified ``address``."""
+        self._update_args(kw)
         return packing.u16(self.read(address, 2), *a, **kw)
 
     def u8(self,     address, *a, **kw):
         """Unpacks an integer from the specified ``address``."""
+        self._update_args(kw)
         return packing.u8(self.read(address, 1), *a, **kw)
 
     def unpack(self, address, *a, **kw):
         """Unpacks an integer from the specified ``address``."""
+        self._update_args(kw)
         return packing.unpack(self.read(address, context.bytes), *a, **kw)
 
     def string(self, address):
@@ -1400,3 +1687,31 @@ class ELF(ELFFile):
 
     def parse_kconfig(self, data):
         self.config.update(parse_kconfig(data))
+
+    def disable_nx(self):
+        """Disables NX for the ELF.
+
+        Zeroes out the ``PT_GNU_STACK`` program header ``p_type`` field.
+        """
+        PT_GNU_STACK = packing.p32(ENUM_P_TYPE['PT_GNU_STACK'])
+
+        if not self.executable:
+            log.error("Can only make stack executable with executables")
+
+        for i, segment in enumerate(self.iter_segments()):
+            if not segment.header.p_type:
+                continue
+            if 'GNU_STACK' not in segment.header.p_type:
+                continue
+
+            phoff = self.header.e_phoff
+            phentsize = self.header.e_phentsize
+            offset = phoff + phentsize * i
+
+            if self.mmap[offset:offset+4] == PT_GNU_STACK:
+                self.mmap[offset:offset+4] = '\x00' * 4
+                self.save()
+                return
+
+        log.error("Could not find PT_GNU_STACK, stack should already be executable")
+
