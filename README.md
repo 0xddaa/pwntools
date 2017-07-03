@@ -62,6 +62,3 @@ We always need '/bin/sh' string when get the shell.
         >>> hex(libc.binsh)
         >>> '0x18c177'
 ```
-
-### 2. Support full relro symbols
-`pwnlib.elf` cannot parse symbols correctly in full relro binary after one glibc version. I made a workaround to fix the issue. It's work for me when I solved CTF challenge. Notice, it may cause some side effect. The related discussion can see at [here](http://github.com/Gallopsled/pwntools/pull/838). The official pwntools has solved the issue with [unicorn](https://github.com/Gallopsled/pwntools/pull/899), but I think it's too heavy.
