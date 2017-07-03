@@ -524,7 +524,7 @@ def attach(target, gdbscript = None, exe = None, need_ptrace_scope = True, gdb_a
         .. code-block:: python
 
             # Connect to the SSH server
-            shell = ssh('bandit0', 'bandit.labs.overthewire.org', password='bandit0')
+            shell = ssh('bandit0', 'bandit.labs.overthewire.org', password='bandit0', port=2220)
 
             # Start a process on the server
             cat = shell.process(['cat'])
@@ -596,7 +596,7 @@ def attach(target, gdbscript = None, exe = None, need_ptrace_scope = True, gdb_a
             cmd = ['sshpass', '-p', shell.password] + cmd
         if shell.keyfile:
             cmd += ['-i', shell.keyfile]
-        cmd += ['gdb %r %s -x "%s"' % (target.executable,
+        cmd += ['gdb -q %r %s -x "%s"' % (target.executable,
                                        target.pid,
                                        tmpfile)]
 
@@ -763,7 +763,7 @@ def find_module_addresses(binary, ssh=None, ulimit=False):
     Example:
 
     >>> with context.local(log_level=9999): # doctest: +SKIP
-    ...     shell = ssh(host='bandit.labs.overthewire.org',user='bandit0',password='bandit0')
+    ...     shell = ssh(host='bandit.labs.overthewire.org',user='bandit0',password='bandit0', port=2220)
     ...     bash_libs = gdb.find_module_addresses('/bin/bash', shell)
     >>> os.path.basename(bash_libs[0].path) # doctest: +SKIP
     'libc.so.6'
@@ -790,7 +790,7 @@ def find_module_addresses(binary, ssh=None, ulimit=False):
     # Get the addresses from GDB
     #
     libs = {}
-    cmd  = "gdb --args %s" % (binary)
+    cmd  = "gdb -q --args %s" % (binary)
     expr = re.compile(r'(0x\S+)[^/]+(.*)')
 
     if ulimit:

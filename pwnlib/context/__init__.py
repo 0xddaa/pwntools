@@ -21,8 +21,11 @@ import time
 
 import socks
 
+from pwnlib.config import register_config
 from pwnlib.device import Device
 from pwnlib.timeout import Timeout
+
+__all__ = ['context', 'ContextType', 'Thread']
 
 _original_socket = socket.socket
 
@@ -246,9 +249,10 @@ def _longest(d):
     as it ensures the most complete match will be found.
 
     >>> data = {'a': 1, 'bb': 2, 'ccc': 3}
-    >>> _longest(data) == data
+    >>> pwnlib.context._longest(data) == data
     True
-    >>> for i in _longest(data): print i
+    >>> for i in pwnlib.context._longest(data):
+    ...     print i
     ccc
     bb
     a
@@ -347,7 +351,7 @@ class ContextType(object):
         'os': 'linux',
         'proxy': None,
         'signed': False,
-        'terminal': None,
+        'terminal': tuple(),
         'timeout': Timeout.maximum,
     }
 
@@ -1326,6 +1330,7 @@ def LocalContext(function):
 
     Example:
 
+        >>> context.clear()
         >>> @LocalContext
         ... def printArch():
         ...     print(context.arch)
@@ -1343,3 +1348,20 @@ def LocalContext(function):
         with context.local(**{k:kw.pop(k) for k,v in kw.items() if isinstance(getattr(ContextType, k, None), property)}):
             return function(*a, **kw)
     return setter
+
+# Read configuration options from the context section
+def update_context_defaults(section):
+    # Circular imports FTW!
+    from pwnlib.util import safeeval
+    from pwnlib.log import getLogger
+    log = getLogger(__name__)
+    for key, value in section.items():
+        if key not in ContextType.defaults:
+            log.warn("Unknown configuration option %r in section %r" % (key, 'context'))
+            continue
+        if isinstance(ContextType.defaults[key], (str, unicode, tuple)):
+            value = safeeval.expr(value)
+
+        ContextType.defaults[key] = value
+
+register_config('context', update_context_defaults)

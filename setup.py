@@ -57,7 +57,8 @@ install_requires     = ['paramiko>=1.15.2',
                         'pypandoc',
                         'packaging',
                         'psutil>=3.3.0',
-                        'intervaltree']
+                        'intervaltree',
+                        'unicorn']
 
 # Check that the user has installed the Python development headers
 PythonH = os.path.join(get_python_inc(), 'Python.h')
@@ -85,7 +86,7 @@ except Exception as e:
 setup(
     name                 = 'pwntools',
     packages             = find_packages(),
-    version              = '3.5.1',
+    version              = '3.7.0',
     data_files           = [('',
                              glob.glob('*.md') + glob.glob('*.txt')),
                             ],
@@ -96,6 +97,7 @@ setup(
             'data/binutils/*',
             'data/includes/*.h',
             'data/includes/*/*.h',
+            'data/templates/*.mako',
         ] + templates,
     },
     entry_points = {'console_scripts': console_scripts},
