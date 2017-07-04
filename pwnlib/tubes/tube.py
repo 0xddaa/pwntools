@@ -690,7 +690,7 @@ class tube(Timeout, Logger):
        Examples:
 
            >>> t = tube()
-           >>> t.unrecv('a'*10 + p32(0x1234) + '\n')
+           >>> t.unrecv('a'*10 + p32(0x1234) + '\\n')
            >>> hex(t.leak(delim_start='a'*10))
            '0x1234'
         """
