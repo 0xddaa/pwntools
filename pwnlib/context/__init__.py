@@ -150,7 +150,7 @@ class _Tls_DictStack(threading.local, _DictStack):
 
 def _validator(validator):
     """
-    Validator that tis tightly coupled to the implementation
+    Validator that is tightly coupled to the implementation
     of the classes here.
 
     This expects that the object has a ._tls property which
@@ -340,6 +340,7 @@ class ContextType(object):
         'delete_corefiles': False,
         'device': os.getenv('ANDROID_SERIAL', None) or None,
         'endian': 'little',
+        'gdbinit': "",
         'kernel': None,
         'log_level': logging.INFO,
         'log_file': _devnull(),
@@ -1231,6 +1232,23 @@ class ContextType(object):
         """
         return bool(v)
 
+
+    @_validator
+    def gdbinit(self, value):
+        """Path to the gdbinit that is used when running GDB locally.
+
+        This is useful if you want pwntools-launched GDB to include some additional modules,
+        like PEDA but you do not want to have GDB include them by default.
+
+        The setting will only apply when GDB is launched locally since remote hosts may not have
+        the necessary requirements for the gdbinit.
+
+        If set to an empty string, GDB will use the default `~/.gdbinit`.
+
+        Default value is ``""``.
+        """
+        return str(value)
+
     #*************************************************************************
     #                               ALIASES
     #*************************************************************************
@@ -1359,9 +1377,14 @@ def update_context_defaults(section):
         if key not in ContextType.defaults:
             log.warn("Unknown configuration option %r in section %r" % (key, 'context'))
             continue
-        if isinstance(ContextType.defaults[key], (str, unicode, tuple)):
-            value = safeeval.expr(value)
 
-        ContextType.defaults[key] = value
+        default = ContextType.defaults[key]
+
+        if isinstance(default, (str, unicode, tuple, int, long, list, dict)):
+            value = safeeval.expr(value)
+        else:
+            log.warn("Unsupported configuration option %r in section %r" % (key, 'context'))
+
+        ContextType.defaults[key] = type(default)(value)
 
 register_config('context', update_context_defaults)

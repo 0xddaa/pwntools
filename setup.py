@@ -86,7 +86,7 @@ except Exception as e:
 setup(
     name                 = 'pwntools',
     packages             = find_packages(),
-    version              = '3.7.0',
+    version              = '3.10.0',
     data_files           = [('',
                              glob.glob('*.md') + glob.glob('*.txt')),
                             ],
@@ -105,7 +105,7 @@ setup(
     description          = "Pwntools CTF framework and exploit development library.",
     long_description     = long_description,
     author               = "Gallopsled et al.",
-    author_email         = "#pwntools @ freenode.net",
+    author_email         = "pwntools-users@googlegroups.com",
     url                  = 'https://pwntools.com',
     download_url         = "https://github.com/Gallopsled/pwntools/releases",
     install_requires     = install_requires,
