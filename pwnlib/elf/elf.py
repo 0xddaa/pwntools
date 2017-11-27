@@ -55,6 +55,7 @@ from elftools.elf.enums import ENUM_P_TYPE
 from elftools.elf.gnuversions import GNUVerDefSection
 from elftools.elf.relocation import RelocationSection
 from elftools.elf.sections import SymbolTableSection
+from elftools.elf.segments import InterpSegment
 
 import intervaltree
 
@@ -64,6 +65,7 @@ from pwnlib.context import LocalContext
 from pwnlib.context import context
 from pwnlib.elf.config import kernel_configuration
 from pwnlib.elf.config import parse_kconfig
+from pwnlib.elf.datatypes import constants
 from pwnlib.elf.plt import emulate_plt_instructions
 from pwnlib.log import getLogger
 from pwnlib.qemu import get_qemu_arch
@@ -604,8 +606,18 @@ class ELF(ELFFile):
         >>> any(map(lambda x: 'libc' in x, bash.libs.keys()))
         True
         """
-        if not self.get_section_by_name('.dynamic'):
+
+        # We need a .dynamic section for dynamically linked libraries
+        if not self.get_section_by_name('.dynamic') or self.statically_linked:
             self.libs= {}
+            return
+
+        # We must also specify a 'PT_INTERP', otherwise it's a 'statically-linked'
+        # binary which is also position-independent (and as such has a .dynamic).
+        for segment in self.iter_segments_by_type('PT_INTERP'):
+            break
+        else:
+            self.libs = {}
             return
 
         try:
@@ -1327,14 +1339,28 @@ class ELF(ELFFile):
         .. _PT_GNU_RELRO: https://refspecs.linuxbase.org/LSB_3.1.1/LSB-Core-generic/LSB-Core-generic.html#PROGHEADER
         .. _DF_BIND_NOW: http://refspecs.linuxbase.org/elf/gabi4+/ch5.dynamic.html#df_bind_now
 
+        >>> path = pwnlib.data.elf.relro.path
+        >>> for test in glob(os.path.join(path, 'test-*')):
+        ...     e = ELF(test)
+        ...     expected = os.path.basename(test).split('-')[2]
+        ...     actual = str(e.relro).lower()
+        ...     assert actual == expected
         """
+        if not any('GNU_RELRO' in str(s.header.p_type) for s in self.segments):
+            return None
+
         if self.dynamic_by_tag('DT_BIND_NOW'):
             return "Full"
 
-        if any('GNU_RELRO' in str(s.header.p_type) for s in self.segments):
-            return "Partial"
+        flags = self.dynamic_value_by_tag('DT_FLAGS')
+        if flags and flags & constants.DF_BIND_NOW:
+            return "Full"
 
-        return None
+        flags_1 = self.dynamic_value_by_tag('DT_FLAGS_1')
+        if flags_1 and flags_1 & constants.DF_1_NOW:
+            return "Full"
+
+        return "Partial"
 
     @property
     def nx(self):
@@ -1665,16 +1691,33 @@ class ELF(ELFFile):
         return packing.unpack(self.read(address, context.bytes), *a, **kw)
 
     def string(self, address):
-        """Reads a null-terminated string from the specified ``address``"""
+        """string(address) -> str
+
+        Reads a null-terminated string from the specified ``address``
+
+        Returns:
+            A ``str`` with the string contents (NUL terminator is omitted),
+            or an empty string if no NUL terminator could be found.
+        """
         data = ''
         while True:
-            c = self.read(address, 1)
+            read_size = 0x1000
+            partial_page = address & 0xfff
+
+            if partial_page:
+                read_size -= partial_page
+
+            c = self.read(address, read_size)
+
             if not c:
                 return ''
-            if c == '\x00':
-                return data
+
             data += c
-            address += 1
+
+            if '\x00' in c:
+                return data[:data.index('\x00')]
+
+            address += len(c)
 
     def flat(self, address, *a, **kw):
         """Writes a full array of values to the specified address.
